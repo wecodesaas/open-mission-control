@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Play, Square, Clock, Zap, Target, Shield, Gauge, Palette, FileCode, Bug, Wrench, Loader2, AlertTriangle, RotateCcw, ChevronRight } from 'lucide-react';
+import { Play, Square, Clock, Zap, Target, Shield, Gauge, Palette, FileCode, Bug, Wrench, Loader2, AlertTriangle, RotateCcw, ChevronRight, Image as ImageIcon } from 'lucide-react';
 import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Progress } from './ui/progress';
@@ -151,6 +151,23 @@ export function TaskCard({ task, onClick }: TaskCardProps) {
               className={cn('text-[10px] px-1.5 py-0', TASK_COMPLEXITY_COLORS[task.metadata.complexity])}
             >
               {TASK_COMPLEXITY_LABELS[task.metadata.complexity]}
+            </Badge>
+          )
+        });
+      }
+
+      // Attached images indicator
+      if (task.metadata.attachedImages && task.metadata.attachedImages.length > 0) {
+        result.push({
+          key: 'images',
+          priority: 6,
+          element: (
+            <Badge
+              variant="outline"
+              className="text-[10px] px-1.5 py-0 bg-info/10 text-info border-info/30"
+            >
+              <ImageIcon className="h-2.5 w-2.5 mr-0.5" />
+              {task.metadata.attachedImages.length}
             </Badge>
           )
         });

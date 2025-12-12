@@ -23,7 +23,8 @@ import {
   Loader2,
   RotateCcw,
   Pencil,
-  Save
+  Save,
+  Image as ImageIcon
 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -575,6 +576,43 @@ export function TaskDetailPanel({ task, onClose }: TaskDetailPanelProps) {
                           <Badge key={idx} variant="secondary" className="text-xs font-mono">
                             {file.split('/').pop()}
                           </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Attached Images */}
+                  {task.metadata.attachedImages && task.metadata.attachedImages.length > 0 && (
+                    <div>
+                      <h3 className="text-sm font-medium text-foreground mb-1.5 flex items-center gap-1.5">
+                        <ImageIcon className="h-3.5 w-3.5 text-info" />
+                        Attached Images ({task.metadata.attachedImages.length})
+                      </h3>
+                      <div className="grid grid-cols-2 gap-2">
+                        {task.metadata.attachedImages.map((image) => (
+                          <div
+                            key={image.id}
+                            className="rounded-lg border border-border bg-muted/30 p-2 space-y-1"
+                          >
+                            <div className="flex items-center gap-2">
+                              <ImageIcon className="h-4 w-4 text-muted-foreground shrink-0" />
+                              <span className="text-xs font-medium text-foreground truncate">
+                                {image.filename}
+                              </span>
+                            </div>
+                            {image.path && (
+                              <p className="text-[10px] text-muted-foreground font-mono truncate">
+                                {image.path}
+                              </p>
+                            )}
+                            <p className="text-[10px] text-muted-foreground">
+                              {image.size < 1024
+                                ? `${image.size} B`
+                                : image.size < 1024 * 1024
+                                  ? `${(image.size / 1024).toFixed(1)} KB`
+                                  : `${(image.size / (1024 * 1024)).toFixed(1)} MB`}
+                            </p>
+                          </div>
                         ))}
                       </div>
                     </div>

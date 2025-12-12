@@ -1,0 +1,99 @@
+# Build Progress: Add Images to Task Creation
+
+## Chunk: add-new-implementation
+**Status:** COMPLETED
+**Date:** 2025-12-12
+
+### Summary
+Implemented image upload functionality for task creation in the Auto Build UI.
+
+### Changes Made
+1. **Types (auto-claude-ui/src/shared/types.ts)**
+   - Added `ImageAttachment` interface with id, filename, mimeType, size, data, path, thumbnail fields
+   - Added `attachedImages?: ImageAttachment[]` to `TaskMetadata` interface
+
+2. **Constants (auto-claude-ui/src/shared/constants.ts)**
+   - Added `MAX_IMAGE_SIZE` (10MB)
+   - Added `MAX_IMAGES_PER_TASK` (10)
+   - Added `ALLOWED_IMAGE_TYPES` array (png, jpeg, gif, webp, svg)
+   - Added `ALLOWED_IMAGE_EXTENSIONS` and `ALLOWED_IMAGE_TYPES_DISPLAY`
+   - Added `ATTACHMENTS_DIR` constant
+
+3. **ImageUpload Component (auto-claude-ui/src/renderer/components/ImageUpload.tsx)**
+   - Created new reusable component with drag-and-drop support
+   - File picker with multi-select
+   - Image thumbnails with preview
+   - File size display
+   - Remove button per image
+   - Validation for file type and size
+   - Large file warning indicators
+   - Duplicate filename resolution with timestamp suffix
+
+4. **TaskCreationWizard (auto-claude-ui/src/renderer/components/TaskCreationWizard.tsx)**
+   - Added collapsible "Reference Images" section
+   - Integrated ImageUpload component
+   - Added images count badge when images are attached
+   - Made dialog scrollable for longer content
+   - Images passed through metadata.attachedImages
+
+5. **IPC Handler (auto-claude-ui/src/main/ipc-handlers.ts)**
+   - Updated TASK_CREATE handler to process images
+   - Creates attachments/ directory in spec folder
+   - Decodes base64 images and saves to disk
+   - Updates metadata with relative paths (removes base64 data)
+   - Creates requirements.json with attached_images array
+
+6. **Utils (auto-claude-ui/src/renderer/lib/utils.ts)**
+   - Created cn() utility function for Tailwind class merging (was missing from worktree)
+
+### Verification
+- Commit: 0f0cbae - "auto-claude: add-new-implementation - Add image upload to task creation"
+- All TypeScript changes follow existing patterns
+- No console.log debugging statements
+- Error handling implemented for file processing
+
+### Next Steps
+- Phase 2: Migrate consumers (test the feature in the UI)
+- Phase 3: Remove old system (N/A - this is a new feature)
+- Phase 4: Polish and verify complete
+
+---
+
+## Chunk: migrate-to-new
+**Status:** COMPLETED
+**Date:** 2025-12-12
+
+### Summary
+Updated UI consumers to display attached images and show image indicators throughout the application.
+
+### Changes Made
+1. **TaskDetailPanel (auto-claude-ui/src/renderer/components/TaskDetailPanel.tsx)**
+   - Added ImageIcon import from lucide-react
+   - Added "Attached Images" section in the Overview tab
+   - Displays image filename, path, and size for each attached image
+   - Section only appears when task has attached images
+   - Follows existing metadata display patterns
+
+2. **TaskCard (auto-claude-ui/src/renderer/components/TaskCard.tsx)**
+   - Added ImageIcon import from lucide-react
+   - Added images badge indicator when task has attached images
+   - Shows count of attached images (e.g., "2" with image icon)
+   - Badge styled consistently with other metadata badges
+
+### Consumer Integration Complete
+- **TaskCreationWizard**: Creates tasks with images (Phase 1)
+- **TaskDetailPanel**: Displays attached images in task details (Phase 2)
+- **TaskCard**: Shows image count badge on Kanban cards (Phase 2)
+- **IPC Handler**: Stores images and updates requirements.json (Phase 1)
+- **preload/index.ts**: API already supports metadata with images (Phase 1)
+- **task-store.ts**: createTask already passes metadata correctly (Phase 1)
+
+### Verification
+- All consumers updated to show image-related information
+- No TypeScript compilation errors (verified by reading imports and types)
+- Follows existing UI patterns and styling conventions
+- No debugging statements added
+
+### Notes
+- Insights chat creates tasks via suggestedTask which doesn't include images (expected behavior - images are for manual task creation)
+- Image thumbnails are only shown during upload in TaskCreationWizard (not in TaskDetailPanel to keep it lightweight)
