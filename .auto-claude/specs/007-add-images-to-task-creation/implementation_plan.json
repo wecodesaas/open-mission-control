@@ -70,7 +70,7 @@
         {
           "id": "verify-complete",
           "description": "Verify refactor is complete",
-          "status": "pending",
+          "status": "completed",
           "verification": {
             "type": "browser",
             "scenario": "All functionality works, no regressions"
