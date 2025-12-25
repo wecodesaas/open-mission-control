@@ -223,18 +223,102 @@ This confirms the version is sourced from `package.json` during the build proces
 
 ---
 
+## Phase 2: Root Cause Analysis
+
+### Subtask 2-1: Inspect v2.7.1 Git Tag and Commit
+
+**Commands Used:**
+```bash
+git log -1 v2.7.1 --format='%H %s %ci'
+git show v2.7.1 --format='Commit: %H%nAuthor: %an <%ae>%nDate: %ci%nMessage: %s' --no-patch
+git tag -l v2.7.1 -n1
+git cat-file -t v2.7.1
+git show v2.7.1:auto-claude-ui/package.json | head -10 | grep version
+```
+
+#### Tag Details
+
+| Property | Value |
+|----------|-------|
+| Tag Name | v2.7.1 |
+| Tag Type | Lightweight (commit reference, not annotated) |
+| Points To | `772a5006d45487b600ce4079bae1c98f9ccf6b2e` |
+
+#### Tagged Commit Details
+
+| Property | Value |
+|----------|-------|
+| Commit Hash | `772a5006d45487b600ce4079bae1c98f9ccf6b2e` |
+| Author | AndyMik90 <andre@mikalsenutvikling.no> |
+| Commit Date | 2025-12-22 14:35:30 +0100 |
+| Commit Message | `2.7.1` |
+| package.json Version | **2.7.0** (MISMATCH) |
+
+#### Verification Output
+
+```
+$ git log -1 v2.7.1 --format='%H %s %ci'
+772a5006d45487b600ce4079bae1c98f9ccf6b2e 2.7.1 2025-12-22 14:35:30 +0100
+
+$ git show v2.7.1:auto-claude-ui/package.json | grep version
+  "version": "2.7.0",
+```
+
+#### Commit Context
+
+```
+$ git log -3 --oneline v2.7.1
+772a5006 2.7.1                                        <-- v2.7.1 TAG HERE
+d23fcd86 Enhance VirusTotal scan error handling...
+326118bd Refactor macOS build workflow...
+```
+
+#### Analysis
+
+1. **Tag Type:** The tag is a lightweight tag (just a commit reference), not an annotated tag. This means there's no separate tag object with metadata, author, or message.
+
+2. **Commit Message vs Version:** The commit message says "2.7.1" but the `package.json` at this commit still contains version `2.7.0`. This is the source of the mismatch.
+
+3. **Release Workflow Behavior:** When the GitHub release workflow triggered on tag push `v2.7.1`:
+   - It checked out commit `772a5006`
+   - It read version from `auto-claude-ui/package.json` which was `2.7.0`
+   - It built artifacts with `2.7.0` in the filename
+   - It uploaded these incorrectly-versioned artifacts to the v2.7.1 release
+
+4. **Timeline Confirmation:**
+   - Tag created: 2025-12-22 14:35:30 +0100
+   - Release published: 2025-12-22T13:35:38Z (same time, UTC)
+   - Version bump commit `8db71f3d` happened AFTER this
+
+#### Root Cause Confirmed
+
+The v2.7.1 tag points to a commit where `package.json` still had version `2.7.0`. This is a **"tag before version bump"** error in the release process.
+
+The correct sequence should have been:
+1. First: Bump package.json version to 2.7.1
+2. Second: Commit the version bump
+3. Third: Create and push the v2.7.1 tag
+
+What actually happened:
+1. Created tag v2.7.1 on commit with package.json version 2.7.0
+2. Workflow triggered and built with wrong version
+3. Version bump to 2.7.1 committed afterwards (too late)
+
+---
+
 ## Next Steps
 
 1. ~~**Subtask 1-1:** Verify v2.7.1 assets~~ ✅ Complete
 2. ~~**Subtask 1-2:** Compare with v2.7.0 release and verify expected naming pattern~~ ✅ Complete
 3. ~~**Subtask 1-3:** Check package.json version and git state~~ ✅ Complete - ROOT CAUSE IDENTIFIED
-4. **Phase 2:** Investigate root cause (tag pointing to wrong commit, workflow issue, manual error)
-5. **Phase 3:** Implement fix (re-upload correct files or publish v2.7.2)
-6. **Phase 4:** Add validation to prevent future occurrences
+4. ~~**Subtask 2-1:** Inspect v2.7.1 git tag and commit~~ ✅ Complete - TAG/COMMIT MISMATCH CONFIRMED
+5. **Subtask 2-2:** Check release workflow runs (investigate workflow execution)
+6. **Phase 3:** Implement fix (re-upload correct files or publish v2.7.2)
+7. **Phase 4:** Add validation to prevent future occurrences
 
 ---
 
-## Status: Phase 1 Complete - Root Cause Identified
+## Status: Phase 2 In Progress - Subtask 2-1 Complete
 
 **Root Cause:** The v2.7.1 tag was created on commit `772a5006` which still had `package.json` version `2.7.0`. The version was only bumped to `2.7.1` in a subsequent commit `8db71f3d`, but by then the release workflow had already run with the old version.
 
