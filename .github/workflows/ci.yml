@@ -1,27 +1,70 @@
 name: CI
 
+# PR-only trigger prevents double runs (no push trigger)
 on:
-  push:
-    branches: [main, develop]
   pull_request:
     branches: [main, develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/FUNDING.yml'
+      - '.github/PULL_REQUEST_TEMPLATE.md'
+      - 'LICENSE'
+      - '.gitignore'
 
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
 
 permissions:
   contents: read
   actions: read
+  security-events: write
 
 jobs:
-  # Python tests
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CHANGE DETECTION - Skip jobs based on what files changed
+  # ═══════════════════════════════════════════════════════════════════════════
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      any_code: ${{ steps.filter.outputs.any_code }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'apps/backend/**'
+              - 'tests/**'
+              - 'requirements*.txt'
+              - 'apps/backend/requirements.txt'
+            frontend:
+              - 'apps/frontend/**'
+              - 'package*.json'
+            any_code:
+              - 'apps/**'
+              - 'tests/**'
+              - 'package*.json'
+              - 'requirements*.txt'
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PYTHON TESTS
+  # ═══════════════════════════════════════════════════════════════════════════
   test-python:
+    name: test-python (${{ matrix.python-version }})
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
         python-version: ['3.12', '3.13']
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -69,8 +112,13 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
-  # Frontend lint, typecheck, test, and build
+  # ═══════════════════════════════════════════════════════════════════════════
+  # FRONTEND TESTS (Lint, TypeCheck, Test, Build)
+  # ═══════════════════════════════════════════════════════════════════════════
   test-frontend:
+    name: test-frontend
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -110,3 +158,241 @@ jobs:
       - name: Build
         working-directory: apps/frontend
         run: npm run build
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # PYTHON LINTING (Ruff)
+  # ═══════════════════════════════════════════════════════════════════════════
+  lint-python:
+    name: lint-python
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Pin ruff version to match .pre-commit-config.yaml (astral-sh/ruff-pre-commit rev)
+      - name: Install ruff
+        run: pip install ruff==0.14.10
+
+      - name: Run ruff check
+        run: ruff check apps/backend/ --output-format=github
+
+      - name: Run ruff format check
+        run: ruff format apps/backend/ --check --diff
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SECURITY - CodeQL Analysis
+  # ═══════════════════════════════════════════════════════════════════════════
+  codeql:
+    name: codeql (${{ matrix.language }})
+    needs: changes
+    if: needs.changes.outputs.any_code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: +security-extended,security-and-quality
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SECURITY - Python Bandit
+  # ═══════════════════════════════════════════════════════════════════════════
+  python-security:
+    name: python-security
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Bandit
+        run: pip install bandit
+
+      - name: Run Bandit security scan
+        id: bandit
+        run: |
+          echo "::group::Running Bandit security scan"
+          # Run Bandit; exit code 1 means issues found (expected), other codes are errors
+          # Flags: -r=recursive, -ll=severity LOW+, -ii=confidence LOW+, -f=format, -o=output
+          bandit -r apps/backend/ -ll -ii -f json -o bandit-report.json || BANDIT_EXIT=$?
+          if [ "${BANDIT_EXIT:-0}" -gt 1 ]; then
+            echo "::error::Bandit scan failed with exit code $BANDIT_EXIT"
+            exit 1
+          fi
+          echo "::endgroup::"
+
+      - name: Analyze Bandit results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+
+            // Check if report exists
+            if (!fs.existsSync('bandit-report.json')) {
+              core.setFailed('Bandit report not found - scan may have failed');
+              return;
+            }
+
+            const report = JSON.parse(fs.readFileSync('bandit-report.json', 'utf8'));
+            const results = report.results || [];
+
+            // Categorize by severity
+            const high = results.filter(r => r.issue_severity === 'HIGH');
+            const medium = results.filter(r => r.issue_severity === 'MEDIUM');
+            const low = results.filter(r => r.issue_severity === 'LOW');
+
+            console.log(`::group::Bandit Security Scan Results`);
+            console.log(`Found ${results.length} issues:`);
+            console.log(`  HIGH:   ${high.length}`);
+            console.log(`  MEDIUM: ${medium.length}`);
+            console.log(`  LOW:    ${low.length}`);
+            console.log('');
+
+            // Print high severity issues
+            if (high.length > 0) {
+              console.log('High Severity Issues:');
+              console.log('-'.repeat(60));
+              for (const issue of high) {
+                console.log(`  ${issue.filename}:${issue.line_number}`);
+                console.log(`    ${issue.issue_text}`);
+                console.log(`    Test: ${issue.test_id} (${issue.test_name})`);
+                console.log('');
+              }
+            }
+            console.log('::endgroup::');
+
+            // Build summary
+            let summary = `## Python Security Scan (Bandit)\n\n`;
+            summary += `| Severity | Count |\n`;
+            summary += `|----------|-------|\n`;
+            summary += `| High | ${high.length} |\n`;
+            summary += `| Medium | ${medium.length} |\n`;
+            summary += `| Low | ${low.length} |\n\n`;
+
+            if (high.length > 0) {
+              summary += `### High Severity Issues\n\n`;
+              for (const issue of high) {
+                summary += `- **${issue.filename}:${issue.line_number}**\n`;
+                summary += `  - ${issue.issue_text}\n`;
+                summary += `  - Test: \`${issue.test_id}\` (${issue.test_name})\n\n`;
+              }
+            }
+
+            core.summary.addRaw(summary);
+            await core.summary.write();
+
+            // Fail if high severity issues found
+            if (high.length > 0) {
+              core.setFailed(`Found ${high.length} high severity security issue(s)`);
+            } else {
+              console.log('No high severity security issues found');
+            }
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # SECURITY SUMMARY - Aggregates all security check results
+  # ═══════════════════════════════════════════════════════════════════════════
+  security-summary:
+    name: security-summary
+    needs: [changes, codeql, python-security]
+    if: always() && needs.changes.outputs.any_code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check security results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const codeql = '${{ needs.codeql.result }}';
+            const bandit = '${{ needs.python-security.result }}';
+
+            console.log('Security Check Results:');
+            console.log(`  CodeQL:  ${codeql}`);
+            console.log(`  Bandit:  ${bandit}`);
+
+            // Only 'failure' is a real failure; 'skipped' is acceptable (e.g., path filters)
+            const acceptable = ['success', 'skipped'];
+            const codeqlOk = acceptable.includes(codeql);
+            const banditOk = acceptable.includes(bandit);
+            const allPassed = codeqlOk && banditOk;
+
+            if (allPassed) {
+              console.log('\nAll security checks passed');
+              core.summary.addRaw('## Security Checks Passed\n\nAll security scans completed successfully.');
+            } else {
+              console.log('\nSome security checks failed');
+              core.summary.addRaw('## Security Checks Failed\n\nOne or more security scans found issues.');
+              core.setFailed('Security checks failed');
+            }
+
+            await core.summary.write();
+
+  # ═══════════════════════════════════════════════════════════════════════════
+  # CI STATUS - Final job that indicates overall CI status for branch protection
+  # ═══════════════════════════════════════════════════════════════════════════
+  ci-status:
+    name: CI Status
+    needs: [changes, test-python, test-frontend, lint-python, codeql, python-security, security-summary]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check CI results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const results = {
+              'test-python': '${{ needs.test-python.result }}',
+              'test-frontend': '${{ needs.test-frontend.result }}',
+              'lint-python': '${{ needs.lint-python.result }}',
+              'codeql': '${{ needs.codeql.result }}',
+              'python-security': '${{ needs.python-security.result }}',
+              'security-summary': '${{ needs.security-summary.result }}'
+            };
+
+            console.log('CI Results:');
+            for (const [job, result] of Object.entries(results)) {
+              console.log(`  ${job}: ${result}`);
+            }
+
+            // 'skipped' is acceptable (path filters), 'success' is good, anything else is bad
+            const acceptable = ['success', 'skipped'];
+            const failed = Object.entries(results)
+              .filter(([_, result]) => !acceptable.includes(result))
+              .map(([job, result]) => `${job}: ${result}`);
+
+            if (failed.length > 0) {
+              console.log('\nFailed jobs:');
+              failed.forEach(f => console.log(`  - ${f}`));
+              core.setFailed(`CI failed: ${failed.join(', ')}`);
+            } else {
+              console.log('\nAll CI checks passed (or were skipped due to path filters)');
+            }
