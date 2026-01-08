@@ -13,6 +13,13 @@ from .bot_verifier import (
     is_trusted_bot,
     require_trusted_bot,
 )
+from .pr_check_waiter import (
+    PRCheckWaiter,
+    WaitForChecksResult,
+    WaitResult,
+    get_pr_check_waiter,
+    reset_pr_check_waiter,
+)
 from .pr_review_engine import PRReviewEngine
 from .prompt_manager import PromptManager
 from .response_parsers import ResponseParser
@@ -29,4 +36,9 @@ __all__ = [
     "get_bot_verifier",
     "is_trusted_bot",
     "require_trusted_bot",
+    "PRCheckWaiter",
+    "WaitForChecksResult",
+    "WaitResult",
+    "get_pr_check_waiter",
+    "reset_pr_check_waiter",
 ]
