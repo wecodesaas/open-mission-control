@@ -14,7 +14,17 @@ from .auto_pr_review_orchestrator import (
     get_auto_pr_review_orchestrator,
     reset_auto_pr_review_orchestrator,
 )
-from .autofix_processor import AutoFixProcessor
+from .autofix_processor import (
+    AutoFixProcessor,
+    AutofixProcessorResult,
+    cancel_auto_pr_review,
+    get_all_active_reviews,
+    get_auto_pr_review_config,
+    get_auto_pr_review_status,
+    is_auto_pr_review_enabled,
+    trigger_auto_pr_review_on_qa_pass,
+    trigger_auto_pr_review_on_qa_pass_sync,
+)
 from .batch_processor import BatchProcessor
 from .bot_verifier import (
     BotVerifier,
@@ -61,4 +71,13 @@ __all__ = [
     "WaitResult",
     "get_pr_check_waiter",
     "reset_pr_check_waiter",
+    # Autofix Processor (QA pass workflow integration)
+    "AutofixProcessorResult",
+    "trigger_auto_pr_review_on_qa_pass",
+    "trigger_auto_pr_review_on_qa_pass_sync",
+    "is_auto_pr_review_enabled",
+    "get_auto_pr_review_config",
+    "cancel_auto_pr_review",
+    "get_auto_pr_review_status",
+    "get_all_active_reviews",
 ]

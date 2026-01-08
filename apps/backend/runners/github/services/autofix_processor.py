@@ -1,249 +1,444 @@
 """
-Auto-Fix Processor
-==================
+Autofix Processor
+=================
 
-Handles automatic issue fixing workflow including permissions and state management.
+Connects the Auto-PR-Review workflow to QA pass events.
+
+When QA passes on a PR, this processor triggers the AutoPRReviewOrchestrator
+to automatically review and fix any remaining issues before human approval.
+
+Key Features:
+- Triggers auto PR review after QA passes
+- Respects authorization checks
+- Supports async and sync invocation
+- NEVER auto-merges (human approval always required)
+
+Usage:
+    # Async usage
+    result = await trigger_auto_pr_review_on_qa_pass(
+        pr_number=123,
+        repo="owner/repo",
+        pr_url="https://github.com/owner/repo/pull/123",
+        branch_name="feature-branch",
+        triggered_by="qa-agent",
+    )
+
+    # Check if auto PR review is enabled
+    if is_auto_pr_review_enabled():
+        # Proceed with auto review
+        pass
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
+import logging
+import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 try:
-    from ..models import AutoFixState, AutoFixStatus, GitHubRunnerConfig
-    from ..permissions import GitHubPermissionChecker
-except (ImportError, ValueError, SystemError):
-    from models import AutoFixState, AutoFixStatus, GitHubRunnerConfig
-    from permissions import GitHubPermissionChecker
+    import structlog
+
+    logger = structlog.get_logger(__name__)
+    STRUCTLOG_AVAILABLE = True
+except ImportError:
+    logger = logging.getLogger(__name__)
+    STRUCTLOG_AVAILABLE = False
+
+from .auto_pr_review_orchestrator import (
+    OrchestratorResult,
+    OrchestratorRunResult,
+    get_auto_pr_review_orchestrator,
+)
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
+# Environment variable to enable/disable auto PR review
+AUTO_PR_REVIEW_ENABLED_ENV = "GITHUB_AUTO_PR_REVIEW_ENABLED"
+
+# Default settings
+DEFAULT_GITHUB_DIR = Path(".auto-claude/github")
+DEFAULT_SPEC_DIR = Path(".auto-claude/specs")
 
 
-class AutoFixProcessor:
-    """Handles auto-fix workflow for issues."""
+# =============================================================================
+# Result Types
+# =============================================================================
 
-    def __init__(
-        self,
-        github_dir: Path,
-        config: GitHubRunnerConfig,
-        permission_checker: GitHubPermissionChecker,
-        progress_callback=None,
-    ):
-        self.github_dir = Path(github_dir)
-        self.config = config
-        self.permission_checker = permission_checker
-        self.progress_callback = progress_callback
 
-    def _report_progress(self, phase: str, progress: int, message: str, **kwargs):
-        """Report progress if callback is set."""
-        if self.progress_callback:
-            # Import at module level to avoid circular import issues
-            import sys
+@dataclass
+class AutofixProcessorResult:
+    """Result of the autofix processor."""
 
-            if "orchestrator" in sys.modules:
-                ProgressCallback = sys.modules["orchestrator"].ProgressCallback
-            else:
-                # Fallback: try relative import
-                try:
-                    from ..orchestrator import ProgressCallback
-                except ImportError:
-                    from orchestrator import ProgressCallback
+    success: bool
+    triggered: bool
+    pr_number: int
+    repo: str
+    orchestrator_result: OrchestratorRunResult | None = None
+    error_message: str | None = None
+    skipped_reason: str | None = None
 
-            self.progress_callback(
-                ProgressCallback(
-                    phase=phase, progress=progress, message=message, **kwargs
-                )
-            )
+    def to_dict(self) -> dict:
+        """Convert to dictionary for serialization."""
+        result = {
+            "success": self.success,
+            "triggered": self.triggered,
+            "pr_number": self.pr_number,
+            "repo": self.repo,
+            "error_message": self.error_message,
+            "skipped_reason": self.skipped_reason,
+        }
+        if self.orchestrator_result:
+            result["orchestrator_result"] = self.orchestrator_result.to_dict()
+        return result
 
-    async def process_issue(
-        self,
-        issue_number: int,
-        issue: dict,
-        trigger_label: str | None = None,
-    ) -> AutoFixState:
-        """
-        Process an issue for auto-fix.
 
-        Args:
-            issue_number: The issue number to fix
-            issue: The issue data from GitHub
-            trigger_label: Label that triggered this auto-fix (for permission checks)
+# =============================================================================
+# Configuration Helpers
+# =============================================================================
 
-        Returns:
-            AutoFixState tracking the fix progress
 
-        Raises:
-            PermissionError: If the user who added the trigger label isn't authorized
-        """
-        self._report_progress(
-            "fetching",
-            10,
-            f"Fetching issue #{issue_number}...",
-            issue_number=issue_number,
+def is_auto_pr_review_enabled() -> bool:
+    """
+    Check if auto PR review is enabled via environment variable.
+
+    Returns:
+        True if GITHUB_AUTO_PR_REVIEW_ENABLED is set to "true", "1", or "yes"
+    """
+    value = os.environ.get(AUTO_PR_REVIEW_ENABLED_ENV, "").lower().strip()
+    return value in ("true", "1", "yes", "on")
+
+
+def get_auto_pr_review_config() -> dict[str, Any]:
+    """
+    Get the current auto PR review configuration.
+
+    Returns:
+        Dictionary with configuration settings
+    """
+    return {
+        "enabled": is_auto_pr_review_enabled(),
+        "allowed_users_env": os.environ.get("GITHUB_AUTO_PR_REVIEW_ALLOWED_USERS", ""),
+        "expected_bots_env": os.environ.get("GITHUB_EXPECTED_BOTS", ""),
+        "max_iterations": int(
+            os.environ.get("GITHUB_AUTO_PR_REVIEW_MAX_ITERATIONS", "5")
+        ),
+    }
+
+
+# =============================================================================
+# Logging Helpers
+# =============================================================================
+
+
+def _log_info(message: str, **kwargs: Any) -> None:
+    """Log an info message with context."""
+    if STRUCTLOG_AVAILABLE:
+        logger.info(message, **kwargs)
+    else:
+        logger.info(f"{message} {kwargs}")
+
+
+def _log_warning(message: str, **kwargs: Any) -> None:
+    """Log a warning message with context."""
+    if STRUCTLOG_AVAILABLE:
+        logger.warning(message, **kwargs)
+    else:
+        logger.warning(f"{message} {kwargs}")
+
+
+def _log_error(message: str, **kwargs: Any) -> None:
+    """Log an error message with context."""
+    if STRUCTLOG_AVAILABLE:
+        logger.error(message, **kwargs)
+    else:
+        logger.error(f"{message} {kwargs}")
+
+
+# =============================================================================
+# Main Entry Point
+# =============================================================================
+
+
+async def trigger_auto_pr_review_on_qa_pass(
+    pr_number: int,
+    repo: str,
+    pr_url: str,
+    branch_name: str,
+    triggered_by: str,
+    github_dir: Path | None = None,
+    project_dir: Path | None = None,
+    spec_dir: Path | None = None,
+    on_progress: Callable[[str, Any], None] | None = None,
+    force: bool = False,
+) -> AutofixProcessorResult:
+    """
+    Trigger auto PR review after QA passes.
+
+    This is the main entry point for connecting QA pass events to the
+    AutoPRReviewOrchestrator. Call this function when QA passes on a PR
+    to initiate the automatic review and fix workflow.
+
+    Args:
+        pr_number: PR number to review
+        repo: Repository in owner/repo format
+        pr_url: Full URL to the PR
+        branch_name: PR branch name
+        triggered_by: Username who triggered the review (usually "qa-agent")
+        github_dir: Directory for GitHub state files (default: .auto-claude/github)
+        project_dir: Project root directory (default: current directory)
+        spec_dir: Spec directory for this task (default: .auto-claude/specs)
+        on_progress: Optional callback for progress updates
+        force: If True, skip the enabled check
+
+    Returns:
+        AutofixProcessorResult with status and optional orchestrator result
+
+    Notes:
+        - This function NEVER auto-merges. Human approval is always required.
+        - The orchestrator result will indicate READY_TO_MERGE when all checks pass,
+          but a human must explicitly approve and merge the PR.
+    """
+    _log_info(
+        "QA passed - checking if auto PR review should trigger",
+        pr_number=pr_number,
+        repo=repo,
+        triggered_by=triggered_by,
+    )
+
+    # Check if auto PR review is enabled
+    if not force and not is_auto_pr_review_enabled():
+        _log_info(
+            "Auto PR review is disabled, skipping",
+            pr_number=pr_number,
+            repo=repo,
+        )
+        return AutofixProcessorResult(
+            success=True,
+            triggered=False,
+            pr_number=pr_number,
+            repo=repo,
+            skipped_reason="Auto PR review is disabled (set GITHUB_AUTO_PR_REVIEW_ENABLED=true to enable)",
         )
 
-        # Load or create state
-        state = AutoFixState.load(self.github_dir, issue_number)
-        if state and state.status not in [
-            AutoFixStatus.FAILED,
-            AutoFixStatus.COMPLETED,
-        ]:
-            # Already in progress
-            return state
+    # Resolve directories
+    resolved_github_dir = github_dir or Path.cwd() / DEFAULT_GITHUB_DIR
+    resolved_project_dir = project_dir or Path.cwd()
+    resolved_spec_dir = spec_dir or Path.cwd() / DEFAULT_SPEC_DIR
 
-        try:
-            # PERMISSION CHECK: Verify who triggered the auto-fix
-            if trigger_label:
-                self._report_progress(
-                    "verifying",
-                    15,
-                    f"Verifying permissions for issue #{issue_number}...",
-                    issue_number=issue_number,
-                )
-                permission_result = (
-                    await self.permission_checker.verify_automation_trigger(
-                        issue_number=issue_number,
-                        trigger_label=trigger_label,
-                    )
-                )
-                if not permission_result.allowed:
-                    print(
-                        f"[PERMISSION] Auto-fix denied for #{issue_number}: {permission_result.reason}",
-                        flush=True,
-                    )
-                    raise PermissionError(
-                        f"Auto-fix not authorized: {permission_result.reason}"
-                    )
-                print(
-                    f"[PERMISSION] Auto-fix authorized for #{issue_number} "
-                    f"(triggered by {permission_result.username}, role: {permission_result.role})",
-                    flush=True,
-                )
+    try:
+        # Get or create orchestrator instance
+        orchestrator = get_auto_pr_review_orchestrator(
+            github_dir=resolved_github_dir,
+            project_dir=resolved_project_dir,
+            spec_dir=resolved_spec_dir,
+        )
 
-            state = AutoFixState(
-                issue_number=issue_number,
-                issue_url=f"https://github.com/{self.config.repo}/issues/{issue_number}",
-                repo=self.config.repo,
-                status=AutoFixStatus.ANALYZING,
+        # Run the review workflow
+        _log_info(
+            "Triggering auto PR review",
+            pr_number=pr_number,
+            repo=repo,
+            triggered_by=triggered_by,
+        )
+
+        result = await orchestrator.run(
+            pr_number=pr_number,
+            repo=repo,
+            pr_url=pr_url,
+            branch_name=branch_name,
+            triggered_by=triggered_by,
+            on_progress=on_progress,
+        )
+
+        # Determine success based on result
+        success = result.result in (
+            OrchestratorResult.READY_TO_MERGE,
+            OrchestratorResult.NO_FINDINGS,
+            OrchestratorResult.PR_MERGED,  # Merged externally is OK
+        )
+
+        if result.result == OrchestratorResult.READY_TO_MERGE:
+            _log_info(
+                "Auto PR review completed - ready for human review",
+                pr_number=pr_number,
+                repo=repo,
+                iterations=result.iterations_completed,
+                findings_fixed=result.findings_fixed,
             )
-            await state.save(self.github_dir)
-
-            self._report_progress(
-                "analyzing", 30, "Analyzing issue...", issue_number=issue_number
+        elif result.result == OrchestratorResult.UNAUTHORIZED:
+            _log_warning(
+                "Auto PR review unauthorized",
+                pr_number=pr_number,
+                repo=repo,
+                triggered_by=triggered_by,
             )
-
-            # This would normally call the spec creation process
-            # For now, we just create the state and let the frontend handle spec creation
-            # via the existing investigation flow
-
-            state.update_status(AutoFixStatus.CREATING_SPEC)
-            await state.save(self.github_dir)
-
-            self._report_progress(
-                "complete", 100, "Ready for spec creation", issue_number=issue_number
-            )
-            return state
-
-        except Exception as e:
-            if state:
-                state.status = AutoFixStatus.FAILED
-                state.error = str(e)
-                await state.save(self.github_dir)
-            raise
-
-    async def get_queue(self) -> list[AutoFixState]:
-        """Get all issues in the auto-fix queue."""
-        issues_dir = self.github_dir / "issues"
-        if not issues_dir.exists():
-            return []
-
-        queue = []
-        for f in issues_dir.glob("autofix_*.json"):
-            try:
-                issue_number = int(f.stem.replace("autofix_", ""))
-                state = AutoFixState.load(self.github_dir, issue_number)
-                if state:
-                    queue.append(state)
-            except (ValueError, json.JSONDecodeError):
-                continue
-
-        return sorted(queue, key=lambda s: s.created_at, reverse=True)
-
-    async def check_labeled_issues(
-        self, all_issues: list[dict], verify_permissions: bool = True
-    ) -> list[dict]:
-        """
-        Check for issues with auto-fix labels and return their details.
-
-        This is used by the frontend to detect new issues that should be auto-fixed.
-        When verify_permissions is True, only returns issues where the label was
-        added by an authorized user.
-
-        Args:
-            all_issues: All open issues from GitHub
-            verify_permissions: Whether to verify who added the trigger label
-
-        Returns:
-            List of dicts with issue_number, trigger_label, and authorized status
-        """
-        if not self.config.auto_fix_enabled:
-            return []
-
-        auto_fix_issues = []
-
-        for issue in all_issues:
-            labels = [label["name"] for label in issue.get("labels", [])]
-            matching_labels = [
-                lbl
-                for lbl in self.config.auto_fix_labels
-                if lbl.lower() in [label.lower() for label in labels]
-            ]
-
-            if not matching_labels:
-                continue
-
-            # Check if not already in queue
-            state = AutoFixState.load(self.github_dir, issue["number"])
-            if state and state.status not in [
-                AutoFixStatus.FAILED,
-                AutoFixStatus.COMPLETED,
-            ]:
-                continue
-
-            trigger_label = matching_labels[0]  # Use first matching label
-
-            # Optionally verify permissions
-            if verify_permissions:
-                try:
-                    permission_result = (
-                        await self.permission_checker.verify_automation_trigger(
-                            issue_number=issue["number"],
-                            trigger_label=trigger_label,
-                        )
-                    )
-                    if not permission_result.allowed:
-                        print(
-                            f"[PERMISSION] Skipping #{issue['number']}: {permission_result.reason}",
-                            flush=True,
-                        )
-                        continue
-                    print(
-                        f"[PERMISSION] #{issue['number']} authorized "
-                        f"(by {permission_result.username}, role: {permission_result.role})",
-                        flush=True,
-                    )
-                except Exception as e:
-                    print(
-                        f"[PERMISSION] Error checking #{issue['number']}: {e}",
-                        flush=True,
-                    )
-                    continue
-
-            auto_fix_issues.append(
-                {
-                    "issue_number": issue["number"],
-                    "trigger_label": trigger_label,
-                    "title": issue.get("title", ""),
-                }
+        else:
+            _log_info(
+                "Auto PR review completed",
+                pr_number=pr_number,
+                repo=repo,
+                result=result.result.value,
             )
 
-        return auto_fix_issues
+        return AutofixProcessorResult(
+            success=success,
+            triggered=True,
+            pr_number=pr_number,
+            repo=repo,
+            orchestrator_result=result,
+            error_message=result.error_message if not success else None,
+        )
+
+    except Exception as e:
+        _log_error(
+            f"Auto PR review failed: {e}",
+            pr_number=pr_number,
+            repo=repo,
+        )
+        return AutofixProcessorResult(
+            success=False,
+            triggered=True,
+            pr_number=pr_number,
+            repo=repo,
+            error_message=str(e),
+        )
+
+
+def trigger_auto_pr_review_on_qa_pass_sync(
+    pr_number: int,
+    repo: str,
+    pr_url: str,
+    branch_name: str,
+    triggered_by: str,
+    **kwargs,
+) -> AutofixProcessorResult:
+    """
+    Synchronous wrapper for trigger_auto_pr_review_on_qa_pass.
+
+    Use this when calling from synchronous code that cannot use async/await.
+
+    Args:
+        Same as trigger_auto_pr_review_on_qa_pass
+
+    Returns:
+        AutofixProcessorResult with status and optional orchestrator result
+    """
+    return asyncio.run(
+        trigger_auto_pr_review_on_qa_pass(
+            pr_number=pr_number,
+            repo=repo,
+            pr_url=pr_url,
+            branch_name=branch_name,
+            triggered_by=triggered_by,
+            **kwargs,
+        )
+    )
+
+
+# =============================================================================
+# Cancellation Support
+# =============================================================================
+
+
+def cancel_auto_pr_review(pr_number: int) -> bool:
+    """
+    Cancel an in-progress auto PR review.
+
+    Args:
+        pr_number: PR number to cancel
+
+    Returns:
+        True if cancellation was requested, False if no active review found
+    """
+    try:
+        orchestrator = get_auto_pr_review_orchestrator()
+        return orchestrator.cancel(pr_number)
+    except ValueError:
+        # Orchestrator not initialized
+        return False
+
+
+# =============================================================================
+# Status Queries
+# =============================================================================
+
+
+def get_auto_pr_review_status(pr_number: int) -> dict | None:
+    """
+    Get the status of an auto PR review.
+
+    Args:
+        pr_number: PR number to check
+
+    Returns:
+        Status dictionary or None if no active review
+    """
+    try:
+        orchestrator = get_auto_pr_review_orchestrator()
+        active_reviews = orchestrator.get_active_reviews()
+        if pr_number in active_reviews:
+            state = active_reviews[pr_number]
+            return {
+                "pr_number": state.pr_number,
+                "repo": state.repo,
+                "status": state.status.value,
+                "current_iteration": state.current_iteration,
+                "max_iterations": state.max_iterations,
+                "ci_all_passed": state.ci_all_passed,
+                "started_at": state.started_at,
+            }
+        return None
+    except ValueError:
+        # Orchestrator not initialized
+        return None
+
+
+def get_all_active_reviews() -> list[dict]:
+    """
+    Get all active auto PR reviews.
+
+    Returns:
+        List of status dictionaries for all active reviews
+    """
+    try:
+        orchestrator = get_auto_pr_review_orchestrator()
+        active_reviews = orchestrator.get_active_reviews()
+        return [
+            {
+                "pr_number": state.pr_number,
+                "repo": state.repo,
+                "status": state.status.value,
+                "current_iteration": state.current_iteration,
+                "max_iterations": state.max_iterations,
+            }
+            for state in active_reviews.values()
+        ]
+    except ValueError:
+        return []
+
+
+# =============================================================================
+# Module Exports
+# =============================================================================
+
+__all__ = [
+    # Main entry points
+    "trigger_auto_pr_review_on_qa_pass",
+    "trigger_auto_pr_review_on_qa_pass_sync",
+    # Configuration
+    "is_auto_pr_review_enabled",
+    "get_auto_pr_review_config",
+    # Cancellation
+    "cancel_auto_pr_review",
+    # Status queries
+    "get_auto_pr_review_status",
+    "get_all_active_reviews",
+    # Result type
+    "AutofixProcessorResult",
+]
