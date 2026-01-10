@@ -100,7 +100,7 @@ mock_client.create_client = MagicMock()
 sys.modules['client'] = mock_client
 
 # Now we can safely add the auto-claude path and import
-sys.path.insert(0, str(Path(__file__).parent.parent / "Apps" / "backend"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "apps" / "backend"))
 
 # Import criteria functions directly to avoid going through qa/__init__.py
 # which imports reviewer and fixer that need the SDK
@@ -139,6 +139,22 @@ def cleanup_mocked_modules():
             sys.modules[name] = _original_modules[name]
         elif name in sys.modules:
             del sys.modules[name]
+
+
+@pytest.fixture(autouse=True)
+def reset_mock_progress():
+    """Reset mock_progress state before each test."""
+    import qa.criteria
+    # Reset to default values before each test
+    mock_progress.is_build_complete.return_value = True
+    mock_progress.count_subtasks.return_value = (3, 3)
+    # Also patch the imported function in qa.criteria directly
+    qa.criteria.is_build_complete = mock_progress.is_build_complete
+    yield
+    # Reset again after test to ensure clean state
+    mock_progress.is_build_complete.return_value = True
+    mock_progress.count_subtasks.return_value = (3, 3)
+    qa.criteria.is_build_complete = mock_progress.is_build_complete
 
 
 @pytest.fixture

@@ -481,10 +481,12 @@ class TestMaxIterationsIntegration:
                     triggered_by="testuser",
                 )
 
-                # Should hit max iterations or CI failed (no fixer available)
+                # Should hit max iterations, CI failed, or needs human review
+                # (NEEDS_HUMAN_REVIEW happens when findings can't be auto-fixed)
                 assert result.result in (
                     OrchestratorResult.MAX_ITERATIONS,
                     OrchestratorResult.CI_FAILED,
+                    OrchestratorResult.NEEDS_HUMAN_REVIEW,
                     OrchestratorResult.ERROR,  # PRFixerAgent ImportError is acceptable
                 )
                 assert result.needs_human_review is True
@@ -628,6 +630,7 @@ class TestPRLifecycleIntegration:
                     "headRefOid": "abc123",
                     "state": "MERGED",
                     "merged": True,  # PR is merged
+                    "mergedAt": "2024-01-15T10:30:00Z",  # Required for merged detection
                     "files": [],
                     "comments": [],
                 }

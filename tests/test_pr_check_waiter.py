@@ -59,9 +59,9 @@ class TestPRCheckWaiterInitialization:
         """Test default configuration values."""
         assert waiter.ci_timeout == 1800.0  # 30 minutes
         assert waiter.bot_timeout == 900.0  # 15 minutes
-        assert waiter.poll_interval == 60.0  # 60 seconds
-        assert waiter.base_backoff_delay == 60.0  # 60 seconds
-        assert waiter.max_backoff_delay == 300.0  # 5 minutes
+        assert waiter.poll_interval == 15.0  # 15 seconds (fast initial poll)
+        assert waiter.base_backoff_delay == 15.0  # 15 seconds base
+        assert waiter.max_backoff_delay == 120.0  # 2 minutes max
         assert waiter.log_enabled is False
 
     def test_custom_initialization(self) -> None:
@@ -142,24 +142,38 @@ class TestExponentialBackoff:
     def test_backoff_with_default_values(self) -> None:
         """Test backoff with default configuration."""
         waiter = PRCheckWaiter(log_enabled=False)
-        # Default: base=60, max=300
-        assert waiter._calculate_backoff_delay(0) == 60.0
-        assert waiter._calculate_backoff_delay(1) == 120.0
-        assert waiter._calculate_backoff_delay(2) == 240.0
-        assert waiter._calculate_backoff_delay(3) == 300.0  # Capped
+        # Default: base=15, max=120
+        assert waiter._calculate_backoff_delay(0) == 15.0
+        assert waiter._calculate_backoff_delay(1) == 30.0
+        assert waiter._calculate_backoff_delay(2) == 60.0
+        assert waiter._calculate_backoff_delay(3) == 120.0  # Capped
 
 
 class TestCircuitBreaker:
-    """Tests for circuit breaker functionality (manual fallback)."""
+    """Tests for circuit breaker functionality (manual fallback).
+
+    Note: These tests are for the manual fallback circuit breaker when pybreaker
+    is not installed. When pybreaker is available, it handles circuit breaking.
+    """
 
     @pytest.fixture
     def waiter(self) -> PRCheckWaiter:
-        """Create a fresh PRCheckWaiter instance with short reset timeout."""
-        return PRCheckWaiter(
+        """Create a fresh PRCheckWaiter instance with short reset timeout.
+
+        Forces manual circuit breaker by temporarily mocking pybreaker unavailability.
+        """
+        waiter = PRCheckWaiter(
             circuit_breaker_fail_max=3,
             circuit_breaker_reset_timeout=1,  # 1 second for testing
             log_enabled=False,
         )
+        # Force manual circuit breaker mode for testing
+        waiter._circuit_breaker = None
+        waiter._manual_fail_count = 0
+        waiter._manual_fail_max = 3
+        waiter._manual_reset_timeout = 1
+        waiter._manual_open_since = None
+        return waiter
 
     # =========================================================================
     # Circuit Breaker State Tests
@@ -287,6 +301,11 @@ class TestCancellation:
 
     def test_reset_clears_all_state(self, waiter: PRCheckWaiter) -> None:
         """Test reset() clears all state."""
+        # Force manual circuit breaker mode for this test
+        waiter._circuit_breaker = None
+        waiter._manual_fail_count = 0
+        waiter._manual_open_since = None
+
         # Modify state
         waiter._poll_count = 10
         waiter._error_count = 5
@@ -802,8 +821,12 @@ class TestTimeoutBehavior:
             call_count += 1
             raise RuntimeError("API error")
 
-        # Configure waiter with short circuit breaker settings
+        # Force manual circuit breaker mode and configure for quick opening
+        waiter._circuit_breaker = None
+        waiter._manual_fail_count = 0
         waiter._manual_fail_max = 2  # Open after 2 failures
+        waiter._manual_reset_timeout = 300
+        waiter._manual_open_since = None
 
         with patch.object(waiter, "_fetch_ci_checks", mock_fetch_ci_checks):
             result = await waiter.wait_for_all_checks(
