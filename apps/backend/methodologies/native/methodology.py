@@ -1,21 +1,26 @@
 """Native Auto Claude methodology runner.
 
 This module implements the MethodologyRunner Protocol for the Native Auto Claude
-methodology. It wraps the existing spec_runner.py and agent implementations
-to provide a plugin-compatible interface.
+methodology. It wraps the existing spec creation logic to provide a
+plugin-compatible interface.
 
 Architecture Source: architecture.md#Native-Plugin-Structure
 Story Reference: Story 2.1 - Create Native Methodology Plugin Structure
+Story Reference: Story 2.2 - Implement Native MethodologyRunner
 """
+
+from pathlib import Path
 
 from apps.backend.methodologies.protocols import (
     Artifact,
     Checkpoint,
     CheckpointStatus,
+    ComplexityLevel,
     Phase,
     PhaseResult,
     PhaseStatus,
     RunContext,
+    TaskConfig,
 )
 
 
@@ -33,9 +38,11 @@ class NativeRunner:
     5. Plan - Create implementation plan with subtasks
     6. Validate - Validate spec completeness
 
-    Implementation Note:
-        The actual phase execution logic will be implemented in Story 2.2.
-        This stub provides the Protocol interface for framework integration.
+    Delegation Pattern:
+        - Discovery: delegates to spec.discovery.run_discovery_script
+        - Requirements: delegates to spec.requirements module
+        - Context: delegates to spec.context module
+        - Spec/Plan/Validate: require framework agent infrastructure
 
     Example:
         runner = NativeRunner()
@@ -52,6 +59,11 @@ class NativeRunner:
         self._checkpoints: list[Checkpoint] = []
         self._artifacts: list[Artifact] = []
         self._initialized: bool = False
+        # Story 2.2: Additional context attributes for phase execution
+        self._project_dir: str = ""
+        self._spec_dir: Path | None = None
+        self._task_config: TaskConfig | None = None
+        self._complexity: ComplexityLevel | None = None
 
     def initialize(self, context: RunContext) -> None:
         """Initialize the runner with framework context.
@@ -69,6 +81,16 @@ class NativeRunner:
             raise RuntimeError("NativeRunner already initialized")
 
         self._context = context
+        # Story 2.2: Extract and store key context attributes for phase execution
+        self._project_dir = context.workspace.get_project_root()
+        self._task_config = context.task_config
+        self._complexity = context.task_config.complexity
+
+        # Get spec_dir from task_config metadata if available
+        spec_dir_str = context.task_config.metadata.get("spec_dir")
+        if spec_dir_str:
+            self._spec_dir = Path(spec_dir_str)
+
         self._init_phases()
         self._init_checkpoints()
         self._init_artifacts()
@@ -90,6 +112,8 @@ class NativeRunner:
     def execute_phase(self, phase_id: str) -> PhaseResult:
         """Execute a specific phase of the Native methodology.
 
+        Delegates to the existing spec creation logic for each phase.
+
         Args:
             phase_id: ID of the phase to execute (discovery, requirements,
                      context, spec, plan, or validate)
@@ -99,11 +123,8 @@ class NativeRunner:
 
         Raises:
             RuntimeError: If runner has not been initialized
-            ValueError: If phase_id is not recognized
 
-        Note:
-            Full implementation will be added in Story 2.2.
-            This stub returns a placeholder result.
+        Story Reference: Story 2.2 - Implement Native MethodologyRunner
         """
         self._ensure_initialized()
 
@@ -116,18 +137,338 @@ class NativeRunner:
                 error=f"Unknown phase: {phase_id}",
             )
 
-        # Update phase status
+        # Update phase status to IN_PROGRESS
         phase.status = PhaseStatus.IN_PROGRESS
 
-        # TODO: Story 2.2 - Implement actual phase execution
-        # This stub returns a placeholder success result
-        phase.status = PhaseStatus.COMPLETED
+        # Report progress via context service
+        if self._context:
+            self._context.progress.update(phase_id, 0.0, f"Starting {phase.name}")
+
+        # Execute the phase using the dispatch table
+        try:
+            result = self._execute_phase_impl(phase_id)
+
+            # Update phase status based on result
+            if result.success:
+                phase.status = PhaseStatus.COMPLETED
+                if self._context:
+                    self._context.progress.update(
+                        phase_id, 1.0, f"{phase.name} completed"
+                    )
+            else:
+                phase.status = PhaseStatus.FAILED
+                if self._context:
+                    self._context.progress.update(
+                        phase_id, 0.0, f"{phase.name} failed: {result.error}"
+                    )
+
+            return result
+
+        except Exception as e:
+            phase.status = PhaseStatus.FAILED
+            return PhaseResult(
+                success=False,
+                phase_id=phase_id,
+                error=str(e),
+            )
+
+    def _execute_phase_impl(self, phase_id: str) -> PhaseResult:
+        """Dispatch to the appropriate phase implementation.
+
+        Args:
+            phase_id: ID of the phase to execute
+
+        Returns:
+            PhaseResult from the phase execution
+        """
+        dispatch = {
+            "discovery": self._execute_discovery,
+            "requirements": self._execute_requirements,
+            "context": self._execute_context,
+            "spec": self._execute_spec,
+            "plan": self._execute_plan,
+            "validate": self._execute_validate,
+        }
+
+        handler = dispatch.get(phase_id)
+        if handler is None:
+            return PhaseResult(
+                success=False,
+                phase_id=phase_id,
+                error=f"No implementation for phase: {phase_id}",
+            )
+
+        return handler()
+
+    def _execute_discovery(self) -> PhaseResult:
+        """Execute the discovery phase.
+
+        Delegates to spec.discovery.run_discovery_script to analyze
+        project structure and create project_index.json.
+
+        Returns:
+            PhaseResult with success status and artifacts
+        """
+        if self._spec_dir is None:
+            return PhaseResult(
+                success=False,
+                phase_id="discovery",
+                error="No spec_dir configured. Set spec_dir in task_config.metadata.",
+            )
+
+        # Import here to avoid circular imports
+        from apps.backend.spec import discovery
+
+        project_dir = Path(self._project_dir)
+
+        # Delegate to existing discovery logic
+        success, message = discovery.run_discovery_script(project_dir, self._spec_dir)
+
+        if success:
+            # Verify the artifact was created
+            index_file = self._spec_dir / "project_index.json"
+            artifacts = [str(index_file)] if index_file.exists() else []
+
+            return PhaseResult(
+                success=True,
+                phase_id="discovery",
+                message=message,
+                artifacts=artifacts,
+            )
+        else:
+            return PhaseResult(
+                success=False,
+                phase_id="discovery",
+                error=message,
+            )
+
+    def _execute_requirements(self) -> PhaseResult:
+        """Execute the requirements phase.
+
+        Delegates to spec.requirements module to structure requirements
+        from task configuration and produce requirements.json artifact.
+
+        Returns:
+            PhaseResult with success status and artifacts
+        """
+        if self._task_config is None:
+            return PhaseResult(
+                success=False,
+                phase_id="requirements",
+                error="No task configuration available",
+            )
+
+        if self._spec_dir is None:
+            return PhaseResult(
+                success=False,
+                phase_id="requirements",
+                error="No spec_dir configured. Set spec_dir in task_config.metadata.",
+            )
+
+        # Import here to avoid circular imports
+        from apps.backend.spec import requirements as req_module
+
+        # Check if requirements already exist
+        existing_req = req_module.load_requirements(self._spec_dir)
+        if existing_req:
+            req_file = self._spec_dir / "requirements.json"
+            return PhaseResult(
+                success=True,
+                phase_id="requirements",
+                message="Requirements already exist",
+                artifacts=[str(req_file)],
+            )
+
+        # Create requirements from task name/metadata
+        task_description = self._task_config.task_name or self._task_config.task_id
+        if not task_description:
+            task_description = self._task_config.metadata.get(
+                "task_description", "Unknown task"
+            )
+
+        req_data = req_module.create_requirements_from_task(task_description)
+        req_file = req_module.save_requirements(self._spec_dir, req_data)
+
         return PhaseResult(
             success=True,
-            phase_id=phase_id,
-            message=f"Phase '{phase.name}' completed (stub implementation)",
-            artifacts=[],
+            phase_id="requirements",
+            message="Requirements created from task configuration",
+            artifacts=[str(req_file)],
         )
+
+    def _execute_context(self) -> PhaseResult:
+        """Execute the context phase.
+
+        Delegates to spec.context module to build codebase context
+        and produce context.json artifact.
+
+        Returns:
+            PhaseResult with success status and artifacts
+        """
+        if self._spec_dir is None:
+            return PhaseResult(
+                success=False,
+                phase_id="context",
+                error="No spec_dir configured. Set spec_dir in task_config.metadata.",
+            )
+
+        # Import here to avoid circular imports
+        from apps.backend.spec import context as ctx_module
+        from apps.backend.spec import requirements as req_module
+
+        project_dir = Path(self._project_dir)
+
+        # Load requirements for task description
+        task = "Unknown task"
+        services: list[str] = []
+
+        req = req_module.load_requirements(self._spec_dir)
+        if req:
+            task = req.get("task_description", task)
+            services = req.get("services_involved", [])
+
+        # Check if context already exists
+        context_file = self._spec_dir / "context.json"
+        if context_file.exists():
+            return PhaseResult(
+                success=True,
+                phase_id="context",
+                message="Context already exists",
+                artifacts=[str(context_file)],
+            )
+
+        # Delegate to existing context discovery logic
+        success, message = ctx_module.run_context_discovery(
+            project_dir, self._spec_dir, task, services
+        )
+
+        if success:
+            artifacts = [str(context_file)] if context_file.exists() else []
+            return PhaseResult(
+                success=True,
+                phase_id="context",
+                message=message,
+                artifacts=artifacts,
+            )
+        else:
+            # Create minimal context on failure (matches existing behavior)
+            ctx_module.create_minimal_context(self._spec_dir, task, services)
+            return PhaseResult(
+                success=True,
+                phase_id="context",
+                message="Created minimal context (discovery failed)",
+                artifacts=[str(context_file)] if context_file.exists() else [],
+            )
+
+    def _execute_spec(self) -> PhaseResult:
+        """Execute the spec phase.
+
+        Generates the specification document via agent execution.
+        Requires framework agent infrastructure for full implementation.
+
+        Returns:
+            PhaseResult with success status and artifacts
+        """
+        if self._spec_dir is None:
+            return PhaseResult(
+                success=False,
+                phase_id="spec",
+                error="No spec_dir configured. Set spec_dir in task_config.metadata.",
+            )
+
+        spec_file = self._spec_dir / "spec.md"
+
+        # Check if spec already exists
+        if spec_file.exists():
+            return PhaseResult(
+                success=True,
+                phase_id="spec",
+                message="Specification already exists",
+                artifacts=[str(spec_file)],
+            )
+
+        # Spec generation requires agent execution via framework
+        # The framework should call spec_agents/writer logic
+        return PhaseResult(
+            success=False,
+            phase_id="spec",
+            error="Spec generation requires framework agent infrastructure. "
+            "Use SpecOrchestrator for full pipeline execution.",
+        )
+
+    def _execute_plan(self) -> PhaseResult:
+        """Execute the planning phase.
+
+        Creates implementation plan via agent execution.
+        Requires framework agent infrastructure for full implementation.
+
+        Returns:
+            PhaseResult with success status and artifacts
+        """
+        if self._spec_dir is None:
+            return PhaseResult(
+                success=False,
+                phase_id="plan",
+                error="No spec_dir configured. Set spec_dir in task_config.metadata.",
+            )
+
+        plan_file = self._spec_dir / "implementation_plan.json"
+
+        # Check if plan already exists
+        if plan_file.exists():
+            return PhaseResult(
+                success=True,
+                phase_id="plan",
+                message="Implementation plan already exists",
+                artifacts=[str(plan_file)],
+            )
+
+        # Plan generation requires agent execution via framework
+        return PhaseResult(
+            success=False,
+            phase_id="plan",
+            error="Plan generation requires framework agent infrastructure. "
+            "Use SpecOrchestrator for full pipeline execution.",
+        )
+
+    def _execute_validate(self) -> PhaseResult:
+        """Execute the validation phase.
+
+        Validates spec completeness and quality.
+        Can delegate to spec.validate_pkg for validation logic.
+
+        Returns:
+            PhaseResult with success status and validation info
+        """
+        if self._spec_dir is None:
+            return PhaseResult(
+                success=False,
+                phase_id="validate",
+                error="No spec_dir configured. Set spec_dir in task_config.metadata.",
+            )
+
+        # Import here to avoid circular imports
+        from apps.backend.spec.validate_pkg.spec_validator import SpecValidator
+
+        validator = SpecValidator(self._spec_dir)
+        results = validator.validate_all()
+
+        all_valid = all(r.valid for r in results)
+        errors = [f"{r.checkpoint}: {err}" for r in results for err in r.errors]
+
+        if all_valid:
+            return PhaseResult(
+                success=True,
+                phase_id="validate",
+                message="All validation checks passed",
+                artifacts=[],
+            )
+        else:
+            return PhaseResult(
+                success=False,
+                phase_id="validate",
+                error=f"Validation failed: {'; '.join(errors)}",
+            )
 
     def get_checkpoints(self) -> list[Checkpoint]:
         """Return checkpoint definitions for Semi-Auto mode.

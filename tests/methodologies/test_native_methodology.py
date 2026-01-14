@@ -2,11 +2,15 @@
 
 Tests manifest validation, NativeRunner Protocol compliance, and plugin structure.
 Story Reference: Story 2.1 - Create Native Methodology Plugin Structure
+Story Reference: Story 2.2 - Implement Native MethodologyRunner
 """
 
-import pytest
+import tempfile
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
 
 # Project root directory for file path resolution
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -26,10 +30,10 @@ def mock_context() -> Any:
         A fully configured mock RunContext with all required services.
     """
     from apps.backend.methodologies.protocols import (
-        RunContext,
-        TaskConfig,
         ComplexityLevel,
         ExecutionMode,
+        RunContext,
+        TaskConfig,
     )
 
     class MockWorkspace:
@@ -68,6 +72,66 @@ def mock_context() -> Any:
 
 
 @pytest.fixture
+def mock_context_with_spec_dir(tmp_path) -> Any:
+    """Create a mock RunContext with spec_dir configured.
+
+    Args:
+        tmp_path: pytest fixture for temporary directory
+
+    Returns:
+        A RunContext with spec_dir in task_config.metadata
+    """
+    from apps.backend.methodologies.protocols import (
+        ComplexityLevel,
+        ExecutionMode,
+        RunContext,
+        TaskConfig,
+    )
+
+    class MockWorkspace:
+        def get_project_root(self) -> str:
+            return str(tmp_path / "project")
+
+    class MockMemory:
+        def get_context(self, query: str) -> str:
+            return "mock context"
+
+    class MockProgress:
+        def update(self, phase_id: str, progress: float, message: str) -> None:
+            pass
+
+    class MockCheckpoint:
+        def create_checkpoint(self, checkpoint_id: str, data: dict[str, Any]) -> None:
+            pass
+
+    class MockLLM:
+        def generate(self, prompt: str) -> str:
+            return "mock response"
+
+    spec_dir = tmp_path / "specs" / "001-test"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create project dir too
+    project_dir = tmp_path / "project"
+    project_dir.mkdir(parents=True, exist_ok=True)
+
+    return RunContext(
+        workspace=MockWorkspace(),
+        memory=MockMemory(),
+        progress=MockProgress(),
+        checkpoint=MockCheckpoint(),
+        llm=MockLLM(),
+        task_config=TaskConfig(
+            complexity=ComplexityLevel.STANDARD,
+            execution_mode=ExecutionMode.FULL_AUTO,
+            task_id="test-task",
+            task_name="Test Task",
+            metadata={"spec_dir": str(spec_dir)},
+        ),
+    )
+
+
+@pytest.fixture
 def initialized_runner(mock_context: Any) -> Any:
     """Create and initialize a NativeRunner for testing.
 
@@ -81,6 +145,23 @@ def initialized_runner(mock_context: Any) -> Any:
 
     runner = NativeRunner()
     runner.initialize(mock_context)
+    return runner
+
+
+@pytest.fixture
+def initialized_runner_with_spec_dir(mock_context_with_spec_dir: Any) -> Any:
+    """Create and initialize a NativeRunner with spec_dir configured.
+
+    Args:
+        mock_context_with_spec_dir: The mock RunContext with spec_dir.
+
+    Returns:
+        An initialized NativeRunner instance with spec_dir.
+    """
+    from apps.backend.methodologies.native import NativeRunner
+
+    runner = NativeRunner()
+    runner.initialize(mock_context_with_spec_dir)
     return runner
 
 
@@ -238,8 +319,8 @@ class TestNativeRunnerProtocolCompliance:
 
     def test_native_runner_is_methodology_runner(self):
         """Test NativeRunner implements MethodologyRunner Protocol."""
-        from apps.backend.methodologies.protocols import MethodologyRunner
         from apps.backend.methodologies.native import NativeRunner
+        from apps.backend.methodologies.protocols import MethodologyRunner
 
         runner = NativeRunner()
         assert isinstance(runner, MethodologyRunner)
@@ -440,16 +521,12 @@ class TestNativeRunnerArtifacts:
 
 
 # =============================================================================
-# Phase Execution Tests
+# Phase Execution Tests (Basic)
 # =============================================================================
 
 
 class TestNativeRunnerPhaseExecution:
-    """Test NativeRunner phase execution (stub implementation).
-
-    Note: execute_phase() returns stub results in Story 2.1.
-    Full implementation will be added in Story 2.2.
-    """
+    """Test NativeRunner phase execution behavior."""
 
     def test_execute_phase_returns_phase_result(self, initialized_runner):
         """Test execute_phase returns a PhaseResult."""
@@ -457,12 +534,6 @@ class TestNativeRunnerPhaseExecution:
 
         result = initialized_runner.execute_phase("discovery")
         assert isinstance(result, PhaseResult)
-
-    def test_execute_phase_returns_success_for_valid_phase(self, initialized_runner):
-        """Test execute_phase returns success for valid phase ID."""
-        result = initialized_runner.execute_phase("discovery")
-        assert result.success is True
-        assert result.phase_id == "discovery"
 
     def test_execute_phase_returns_failure_for_unknown_phase(self, initialized_runner):
         """Test execute_phase returns failure for unknown phase ID."""
@@ -477,3 +548,373 @@ class TestNativeRunnerPhaseExecution:
         runner = NativeRunner()
         with pytest.raises(RuntimeError, match="not initialized"):
             runner.execute_phase("discovery")
+
+
+# =============================================================================
+# Story 2.2: Initialize Method Tests
+# =============================================================================
+
+
+class TestNativeRunnerInitializeContext:
+    """Test NativeRunner stores context correctly (Story 2.2 AC#1)."""
+
+    def test_initialize_stores_context(self, mock_context):
+        """Test initialize stores the RunContext reference."""
+        from apps.backend.methodologies.native import NativeRunner
+
+        runner = NativeRunner()
+        runner.initialize(mock_context)
+
+        assert runner._context is mock_context
+
+    def test_initialize_extracts_project_dir(self, mock_context):
+        """Test initialize extracts project_dir from context.workspace."""
+        from apps.backend.methodologies.native import NativeRunner
+
+        runner = NativeRunner()
+        runner.initialize(mock_context)
+
+        assert runner._project_dir == "/mock/project"
+
+    def test_initialize_extracts_task_config(self, mock_context):
+        """Test initialize stores task configuration from context."""
+        from apps.backend.methodologies.native import NativeRunner
+
+        runner = NativeRunner()
+        runner.initialize(mock_context)
+
+        assert runner._task_config is mock_context.task_config
+        assert runner._task_config.task_id == "test-task"
+
+    def test_initialize_extracts_complexity(self, mock_context):
+        """Test initialize extracts complexity level from task config."""
+        from apps.backend.methodologies.native import NativeRunner
+        from apps.backend.methodologies.protocols import ComplexityLevel
+
+        runner = NativeRunner()
+        runner.initialize(mock_context)
+
+        assert runner._complexity == ComplexityLevel.STANDARD
+
+    def test_initialize_extracts_spec_dir_from_metadata(self, mock_context_with_spec_dir):
+        """Test initialize extracts spec_dir from task_config.metadata."""
+        from apps.backend.methodologies.native import NativeRunner
+
+        runner = NativeRunner()
+        runner.initialize(mock_context_with_spec_dir)
+
+        assert runner._spec_dir is not None
+        assert runner._spec_dir.exists()
+
+
+# =============================================================================
+# Story 2.2: Get Phases Method Tests
+# =============================================================================
+
+
+class TestNativeRunnerGetPhasesStory22:
+    """Test NativeRunner get_phases returns correct phase info (Story 2.2 AC#2)."""
+
+    def test_get_phases_returns_phases_with_ids(self, initialized_runner):
+        """Test phases have expected IDs matching manifest."""
+        phases = initialized_runner.get_phases()
+
+        expected_ids = ["discovery", "requirements", "context", "spec", "plan", "validate"]
+        actual_ids = [phase.id for phase in phases]
+
+        assert actual_ids == expected_ids
+
+    def test_get_phases_includes_description(self, initialized_runner):
+        """Test each phase has a description."""
+        phases = initialized_runner.get_phases()
+
+        for phase in phases:
+            assert phase.description, f"Phase '{phase.id}' missing description"
+
+    def test_get_phases_includes_name(self, initialized_runner):
+        """Test each phase has a name."""
+        phases = initialized_runner.get_phases()
+
+        for phase in phases:
+            assert phase.name, f"Phase '{phase.id}' missing name"
+
+
+# =============================================================================
+# Story 2.2: Phase Execution Without spec_dir (Failure Cases)
+# =============================================================================
+
+
+class TestNativeRunnerPhaseExecutionNoSpecDir:
+    """Test phases fail gracefully when spec_dir is not configured."""
+
+    def test_discovery_fails_without_spec_dir(self, initialized_runner):
+        """Test discovery phase fails without spec_dir."""
+        result = initialized_runner.execute_phase("discovery")
+
+        assert result.success is False
+        assert "spec_dir" in result.error.lower()
+
+    def test_requirements_fails_without_spec_dir_but_has_task_config(self, initialized_runner):
+        """Test requirements phase fails without spec_dir."""
+        result = initialized_runner.execute_phase("requirements")
+
+        assert result.success is False
+        assert "spec_dir" in result.error.lower()
+
+    def test_context_fails_without_spec_dir(self, initialized_runner):
+        """Test context phase fails without spec_dir."""
+        result = initialized_runner.execute_phase("context")
+
+        assert result.success is False
+        assert "spec_dir" in result.error.lower()
+
+    def test_spec_fails_without_spec_dir(self, initialized_runner):
+        """Test spec phase fails without spec_dir."""
+        result = initialized_runner.execute_phase("spec")
+
+        assert result.success is False
+        assert "spec_dir" in result.error.lower()
+
+    def test_plan_fails_without_spec_dir(self, initialized_runner):
+        """Test plan phase fails without spec_dir."""
+        result = initialized_runner.execute_phase("plan")
+
+        assert result.success is False
+        assert "spec_dir" in result.error.lower()
+
+    def test_validate_fails_without_spec_dir(self, initialized_runner):
+        """Test validate phase fails without spec_dir."""
+        result = initialized_runner.execute_phase("validate")
+
+        assert result.success is False
+        assert "spec_dir" in result.error.lower()
+
+
+# =============================================================================
+# Story 2.2: Requirements Failure Tests (HIGH Issue #4 fix)
+# =============================================================================
+
+
+class TestNativeRunnerRequirementsFailure:
+    """Test requirements phase failure cases (Story 2.2 HIGH #4)."""
+
+    def test_requirements_fails_without_task_config(self, mock_context_with_spec_dir):
+        """Test requirements phase fails when _task_config is None."""
+        from apps.backend.methodologies.native import NativeRunner
+
+        runner = NativeRunner()
+        runner.initialize(mock_context_with_spec_dir)
+
+        # Artificially clear task_config to test the failure path
+        runner._task_config = None
+
+        result = runner.execute_phase("requirements")
+
+        assert result.success is False
+        assert "task configuration" in result.error.lower()
+
+
+# =============================================================================
+# Story 2.2: Individual Phase Execution Tests (With spec_dir)
+# =============================================================================
+
+
+class TestNativeRunnerRequirementsPhase:
+    """Test requirements phase execution (Story 2.2 Task 6)."""
+
+    def test_requirements_creates_file(self, initialized_runner_with_spec_dir):
+        """Test requirements phase creates requirements.json."""
+        result = initialized_runner_with_spec_dir.execute_phase("requirements")
+
+        assert result.success is True
+        assert result.phase_id == "requirements"
+        assert len(result.artifacts) == 1
+        assert "requirements.json" in result.artifacts[0]
+
+    def test_requirements_file_exists_after_execution(self, initialized_runner_with_spec_dir):
+        """Test requirements.json file exists after phase execution."""
+        runner = initialized_runner_with_spec_dir
+        runner.execute_phase("requirements")
+
+        req_file = runner._spec_dir / "requirements.json"
+        assert req_file.exists()
+
+    def test_requirements_returns_existing_if_present(self, initialized_runner_with_spec_dir):
+        """Test requirements phase returns existing file if present."""
+        import json
+
+        runner = initialized_runner_with_spec_dir
+
+        # Create existing requirements
+        req_file = runner._spec_dir / "requirements.json"
+        req_file.write_text(json.dumps({"task_description": "existing"}))
+
+        result = runner.execute_phase("requirements")
+
+        assert result.success is True
+        assert "already exist" in result.message.lower()
+
+
+class TestNativeRunnerSpecPhase:
+    """Test spec phase execution (Story 2.2 Task 8)."""
+
+    def test_spec_fails_without_existing_file(self, initialized_runner_with_spec_dir):
+        """Test spec phase fails when spec.md doesn't exist (requires agent)."""
+        result = initialized_runner_with_spec_dir.execute_phase("spec")
+
+        # Spec generation requires agent infrastructure
+        assert result.success is False
+        assert "framework" in result.error.lower() or "agent" in result.error.lower()
+
+    def test_spec_returns_existing_if_present(self, initialized_runner_with_spec_dir):
+        """Test spec phase succeeds if spec.md already exists."""
+        runner = initialized_runner_with_spec_dir
+
+        # Create existing spec
+        spec_file = runner._spec_dir / "spec.md"
+        spec_file.write_text("# Existing Spec\n\nContent here.")
+
+        result = runner.execute_phase("spec")
+
+        assert result.success is True
+        assert "already exists" in result.message.lower()
+        assert len(result.artifacts) == 1
+
+
+class TestNativeRunnerPlanPhase:
+    """Test plan phase execution (Story 2.2 Task 9)."""
+
+    def test_plan_fails_without_existing_file(self, initialized_runner_with_spec_dir):
+        """Test plan phase fails when implementation_plan.json doesn't exist."""
+        result = initialized_runner_with_spec_dir.execute_phase("plan")
+
+        # Plan generation requires agent infrastructure
+        assert result.success is False
+        assert "framework" in result.error.lower() or "agent" in result.error.lower()
+
+    def test_plan_returns_existing_if_present(self, initialized_runner_with_spec_dir):
+        """Test plan phase succeeds if implementation_plan.json already exists."""
+        import json
+
+        runner = initialized_runner_with_spec_dir
+
+        # Create existing plan
+        plan_file = runner._spec_dir / "implementation_plan.json"
+        plan_file.write_text(json.dumps({"subtasks": []}))
+
+        result = runner.execute_phase("plan")
+
+        assert result.success is True
+        assert "already exists" in result.message.lower()
+
+
+class TestNativeRunnerValidatePhase:
+    """Test validate phase execution (Story 2.2 Task 10)."""
+
+    def test_validate_runs_validation(self, initialized_runner_with_spec_dir):
+        """Test validate phase runs the validator."""
+        result = initialized_runner_with_spec_dir.execute_phase("validate")
+
+        # Validation will fail without required artifacts
+        assert isinstance(result.success, bool)
+        assert result.phase_id == "validate"
+
+
+# =============================================================================
+# Story 2.2: Progress Reporting Tests
+# =============================================================================
+
+
+class TestNativeRunnerProgressReporting:
+    """Test progress reporting integration (Story 2.2)."""
+
+    def test_execute_phase_calls_progress_update_start(self, mock_context):
+        """Test execute_phase calls progress.update at phase start."""
+        from apps.backend.methodologies.native import NativeRunner
+
+        # Replace progress service with mock
+        mock_context.progress = MagicMock()
+
+        runner = NativeRunner()
+        runner.initialize(mock_context)
+
+        runner.execute_phase("discovery")
+
+        # Should have been called at least once
+        mock_context.progress.update.assert_called()
+
+    def test_execute_phase_calls_progress_update_complete(self, mock_context_with_spec_dir):
+        """Test execute_phase calls progress.update when phase completes."""
+        from apps.backend.methodologies.native import NativeRunner
+
+        mock_context_with_spec_dir.progress = MagicMock()
+
+        runner = NativeRunner()
+        runner.initialize(mock_context_with_spec_dir)
+
+        runner.execute_phase("requirements")
+
+        # Get all calls to progress.update
+        calls = mock_context_with_spec_dir.progress.update.call_args_list
+
+        # Should have at least 2 calls: start and complete
+        assert len(calls) >= 2
+
+
+# =============================================================================
+# Story 2.2: Exception Handling Tests
+# =============================================================================
+
+
+class TestNativeRunnerExceptionHandling:
+    """Test exception handling in phase execution."""
+
+    def test_execute_phase_handles_exception(self, mock_context_with_spec_dir):
+        """Test execute_phase returns failure on exception."""
+        from apps.backend.methodologies.native import NativeRunner
+        from apps.backend.methodologies.protocols import PhaseStatus
+
+        runner = NativeRunner()
+        runner.initialize(mock_context_with_spec_dir)
+
+        # Monkeypatch to raise exception
+        def raise_error():
+            raise ValueError("Test error")
+
+        runner._execute_requirements = raise_error
+
+        result = runner.execute_phase("requirements")
+
+        assert result.success is False
+        assert "Test error" in result.error
+
+        # Phase should be marked as FAILED
+        phases = runner.get_phases()
+        req_phase = next(p for p in phases if p.id == "requirements")
+        assert req_phase.status == PhaseStatus.FAILED
+
+    def test_execute_phase_updates_status_on_failure(self, initialized_runner_with_spec_dir):
+        """Test phase status is FAILED after failed execution."""
+        from apps.backend.methodologies.protocols import PhaseStatus
+
+        runner = initialized_runner_with_spec_dir
+
+        # Spec will fail without agent infrastructure
+        runner.execute_phase("spec")
+
+        phases = runner.get_phases()
+        spec_phase = next(p for p in phases if p.id == "spec")
+        assert spec_phase.status == PhaseStatus.FAILED
+
+    def test_execute_phase_updates_status_on_success(self, initialized_runner_with_spec_dir):
+        """Test phase status is COMPLETED after successful execution."""
+        from apps.backend.methodologies.protocols import PhaseStatus
+
+        runner = initialized_runner_with_spec_dir
+
+        # Requirements will succeed
+        runner.execute_phase("requirements")
+
+        phases = runner.get_phases()
+        req_phase = next(p for p in phases if p.id == "requirements")
+        assert req_phase.status == PhaseStatus.COMPLETED
