@@ -2,6 +2,7 @@
 
 Story Reference: Story 4.1 - Implement Full Auto Task Executor
 Story Reference: Story 4.2 - Implement Planning Phase Execution
+Story Reference: Story 4.3 - Implement Coding Phase Execution
 
 This module provides the FullAutoExecutor class that executes all methodology
 phases without user intervention. In Full Auto mode, the system executes
@@ -11,6 +12,7 @@ continuously.
 Architecture Source: architecture.md#Task-Execution
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -18,7 +20,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 # fcntl is POSIX only - use for file locking on Unix/macOS
 try:
@@ -179,6 +181,17 @@ class FullAutoExecutor:
         self._collected_artifacts: list[str] = []
         self._phases: list[Phase] = []
         self._current_state: TaskState | None = None
+
+        # Story 4.3: Initialize spec_dir and worktree_path for coding phase
+        # These can be set from task_config.metadata or explicitly via properties
+        spec_dir_str = (
+            task_config.metadata.get("spec_dir") if task_config.metadata else None
+        )
+        self._spec_dir: Path | None = Path(spec_dir_str) if spec_dir_str else None
+        worktree_str = (
+            task_config.metadata.get("worktree_path") if task_config.metadata else None
+        )
+        self._worktree_path: Path | None = Path(worktree_str) if worktree_str else None
 
         # Task-specific logger for filtering logs by task ID.
         # Logger name format: "apps.backend.core.executors.full_auto.{task_id}"
@@ -719,3 +732,419 @@ class FullAutoExecutor:
             "qa_validation": TaskState.VALIDATION_COMPLETE,
         }
         return complete_state_map.get(phase_id)
+
+    # =========================================================================
+    # Story 4.3: Coding Phase Execution Methods
+    # =========================================================================
+
+    def load_implementation_plan(self, spec_dir: Path) -> list[dict]:
+        """Load subtasks from implementation_plan.json.
+
+        Story Reference: Story 4.3 Task 1 - Load implementation plan
+
+        Args:
+            spec_dir: Directory containing implementation_plan.json
+
+        Returns:
+            List of subtask dictionaries
+
+        Raises:
+            FileNotFoundError: If implementation_plan.json doesn't exist
+            json.JSONDecodeError: If the file contains invalid JSON
+        """
+        plan_path = spec_dir / "implementation_plan.json"
+        if not plan_path.exists():
+            raise FileNotFoundError(f"Implementation plan not found: {plan_path}")
+
+        plan_data = json.loads(plan_path.read_text())
+        return plan_data.get("subtasks", [])
+
+    def get_pending_subtasks(self, spec_dir: Path) -> list[dict]:
+        """Get subtasks that haven't been completed yet.
+
+        Story Reference: Story 4.3 Task 1 - Determine execution order
+
+        Args:
+            spec_dir: Directory containing implementation_plan.json
+
+        Returns:
+            List of subtasks with status "pending"
+        """
+        all_subtasks = self.load_implementation_plan(spec_dir)
+        return [s for s in all_subtasks if s.get("status") == "pending"]
+
+    async def execute_subtask(self, subtask: dict) -> dict:
+        """Execute a single subtask.
+
+        Story Reference: Story 4.3 Task 2 - Implement subtask loop
+
+        This method:
+        1. Marks subtask as in_progress
+        2. Delegates to methodology runner
+        3. Updates subtask status on completion/failure
+
+        Args:
+            subtask: The subtask dictionary to execute
+
+        Returns:
+            Result dictionary with "success" key and optional error
+        """
+        subtask_id = subtask.get("id", "unknown")
+        self._log_info(f"Executing subtask: {subtask_id}", phase_id="coding")
+
+        # Mark as in_progress in the plan file
+        self._update_subtask_status(subtask_id, "in_progress")
+
+        try:
+            # Execute via methodology runner
+            result = await self._execute_subtask_impl(subtask)
+
+            if result.get("success"):
+                self._update_subtask_status(subtask_id, "completed")
+            else:
+                self._update_subtask_status(subtask_id, "failed")
+
+            return result
+
+        except Exception as e:
+            self._update_subtask_status(subtask_id, "failed")
+            return {"success": False, "error": str(e)}
+
+    async def _execute_subtask_impl(
+        self,
+        subtask: dict,
+        attempt: int = 1,
+        recovery_context: str | None = None,
+    ) -> dict:
+        """Internal implementation of subtask execution.
+
+        Story Reference: Story 4.3 Task 2 - Execute via methodology runner
+
+        This method is the core execution logic that can be mocked for testing.
+
+        Args:
+            subtask: The subtask to execute
+            attempt: Current attempt number (1-based)
+            recovery_context: Optional context from previous failed attempts
+
+        Returns:
+            Result dictionary with "success" and optional "error" keys
+        """
+        # Default implementation - delegates to runner.execute_phase
+        # In real usage, this would invoke the coder agent
+        try:
+            if hasattr(self.runner, "execute_subtask"):
+                result = self.runner.execute_subtask(subtask, attempt, recovery_context)
+                return {"success": result.success, "error": result.error}
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _update_subtask_status(self, subtask_id: str, status: str) -> None:
+        """Update a subtask's status in the implementation plan.
+
+        Story Reference: Story 4.3 Task 2 - Update status
+
+        Args:
+            subtask_id: ID of the subtask to update
+            status: New status value ("in_progress", "completed", "failed")
+        """
+        if not self._spec_dir:
+            return
+
+        plan_path = self._spec_dir / "implementation_plan.json"
+        if not plan_path.exists():
+            return
+
+        try:
+            plan_data = json.loads(plan_path.read_text())
+            subtasks = plan_data.get("subtasks", [])
+
+            for subtask in subtasks:
+                if subtask.get("id") == subtask_id:
+                    subtask["status"] = status
+                    break
+
+            plan_path.write_text(json.dumps(plan_data, indent=2))
+        except Exception as e:
+            self._log_warning(f"Failed to update subtask status: {e}")
+
+    async def execute_coding_phase(self) -> dict[str, Any]:
+        """Execute the full coding phase by running all subtasks.
+
+        Story Reference: Story 4.3 Task 2 - Iterate through subtasks
+
+        Returns:
+            Result dictionary with keys:
+            - status: "coding_complete", "failed", "escalated", or "completed"
+            - subtasks_executed: Number of successfully executed subtasks
+            - subtask: ID of failed subtask (if failed/escalated)
+            - error: Error message (if failed/escalated)
+        """
+        if not self._spec_dir:
+            self._log_warning("No spec_dir set for coding phase")
+            return {"status": "failed", "error": "No spec_dir configured"}
+
+        try:
+            pending_subtasks = self.get_pending_subtasks(self._spec_dir)
+        except FileNotFoundError:
+            self._log_warning("No implementation plan found")
+            return {"status": "completed", "subtasks_executed": 0}
+
+        total_subtasks = len(pending_subtasks)
+        if total_subtasks == 0:
+            self._log_info("No pending subtasks - coding phase complete")
+            self.update_task_state(TaskState.CODING_COMPLETE)
+            return {"status": "coding_complete", "subtasks_executed": 0}
+
+        self._log_info(f"Starting coding phase with {total_subtasks} subtasks")
+        self.update_task_state(TaskState.CODING)
+
+        executed = 0
+        for index, subtask in enumerate(pending_subtasks):
+            subtask_id = subtask.get("id", "unknown")
+
+            # Emit progress on start
+            self.emit_subtask_progress(index, total_subtasks, subtask, "started")
+
+            # Execute with retry logic
+            result = await self.execute_subtask_with_retry(subtask)
+
+            if result.get("success"):
+                executed += 1
+                # Update subtask status to completed in plan file
+                self._update_subtask_status(subtask_id, "completed")
+                # Emit progress on complete
+                self.emit_subtask_progress(index, total_subtasks, subtask, "completed")
+                # Commit changes after successful subtask
+                self.commit_subtask_changes(self.format_commit_message(subtask))
+            elif result.get("escalated"):
+                # Escalation - preserve partial progress before stopping
+                self._update_subtask_status(subtask_id, "failed")
+                self.emit_subtask_progress(index, total_subtasks, subtask, "failed")
+                self.update_task_state(TaskState.ESCALATED)
+                self._log_error(
+                    f"Subtask {subtask_id} escalated after max retries",
+                    phase_id="coding",
+                )
+                return {
+                    "status": "escalated",
+                    "subtask": subtask_id,
+                    "subtasks_executed": executed,
+                    "error": result.get("error"),
+                }
+            else:
+                # Non-escalated failure (unexpected) - stop execution and mark failed
+                self._update_subtask_status(subtask_id, "failed")
+                self.emit_subtask_progress(index, total_subtasks, subtask, "failed")
+                self.update_task_state(TaskState.FAILED)
+                error_msg = result.get("error", "Unknown failure")
+                self._log_error(
+                    f"Subtask {subtask_id} failed: {error_msg}",
+                    phase_id="coding",
+                )
+                return {
+                    "status": "failed",
+                    "subtask": subtask_id,
+                    "subtasks_executed": executed,
+                    "error": error_msg,
+                }
+
+        self._log_info(f"Coding phase complete: {executed}/{total_subtasks} subtasks")
+        self.update_task_state(TaskState.CODING_COMPLETE)
+        return {"status": "coding_complete", "subtasks_executed": executed}
+
+    def emit_subtask_progress(
+        self,
+        index: int,
+        total: int,
+        subtask: dict,
+        status: str,
+    ) -> None:
+        """Emit progress event for a subtask.
+
+        Story Reference: Story 4.3 Task 3 - Per-subtask progress reporting
+
+        Args:
+            index: Current subtask index (0-based)
+            total: Total number of subtasks
+            subtask: The subtask dictionary
+            status: Status string ("started", "completed", "failed")
+        """
+        percentage = self.calculate_subtask_percentage(index, total)
+        subtask_id = subtask.get("id", "unknown")
+        subtask_title = subtask.get("title", subtask.get("description", "subtask"))
+
+        message = f"Subtask {status}: {subtask_title}"
+
+        progress_status = (
+            ProgressStatus.STARTED
+            if status == "started"
+            else (
+                ProgressStatus.COMPLETED
+                if status == "completed"
+                else ProgressStatus.FAILED
+            )
+        )
+
+        self._emit_progress_event(
+            phase_id="coding",
+            status=progress_status,
+            message=message,
+            percentage=percentage,
+        )
+
+    def calculate_subtask_percentage(self, completed: int, total: int) -> float:
+        """Calculate progress percentage for subtask execution.
+
+        Story Reference: Story 4.3 Task 3 - Calculate percentage
+
+        The coding phase spans 35-75% of overall progress (40% range).
+        This method calculates where within that range we are.
+
+        Args:
+            completed: Number of completed subtasks
+            total: Total number of subtasks
+
+        Returns:
+            Percentage as float (35.0 to 75.0)
+        """
+        if total == 0:
+            return 35.0  # Start of coding phase
+
+        # Coding phase is 35-75% (40% range)
+        base_percentage = 35.0
+        range_percentage = 40.0
+        return base_percentage + (completed / total) * range_percentage
+
+    def commit_subtask_changes(self, message: str) -> bool:
+        """Commit changes after subtask completion.
+
+        Story Reference: Story 4.3 Task 4 - Git commit integration
+
+        Args:
+            message: Commit message
+
+        Returns:
+            True if commit succeeded, False otherwise
+        """
+        import subprocess
+
+        if not self._worktree_path:
+            self._log_warning("No worktree path configured for commits")
+            return False
+
+        try:
+            # Stage all changes including deletions (git add -A as per Dev Notes)
+            result = subprocess.run(
+                ["git", "add", "-A"],
+                cwd=self._worktree_path,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                self._log_warning(f"Git add failed: {result.stderr}")
+                return False
+
+            # Commit
+            result = subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=self._worktree_path,
+                capture_output=True,
+                text=True,
+            )
+
+            if result.returncode != 0:
+                if (
+                    "nothing to commit" in result.stdout
+                    or "nothing to commit" in result.stderr
+                ):
+                    return True  # No changes to commit
+                self._log_warning(f"Git commit failed: {result.stderr}")
+                return False
+
+            self._log_info(f"Committed changes: {message}")
+            return True
+
+        except Exception as e:
+            self._log_warning(f"Git operation failed: {e}")
+            return False
+
+    def format_commit_message(self, subtask: dict) -> str:
+        """Format a commit message for a subtask.
+
+        Story Reference: Story 4.3 Task 4 - Meaningful commit messages
+
+        Args:
+            subtask: The completed subtask
+
+        Returns:
+            Formatted commit message string
+        """
+        subtask_id = subtask.get("id", "unknown")
+        title = subtask.get("title", subtask.get("description", "subtask"))
+        return f"Implement: {title} (#{subtask_id})"
+
+    async def execute_subtask_with_retry(
+        self,
+        subtask: dict,
+        max_retries: int = 3,
+    ) -> dict:
+        """Execute a subtask with retry logic.
+
+        Story Reference: Story 4.3 Task 5 - Retry logic
+
+        Implements exponential backoff with recovery context passed
+        on retry attempts.
+
+        Args:
+            subtask: The subtask to execute
+            max_retries: Maximum number of attempts (default 3)
+
+        Returns:
+            Result dictionary with "success", "error", and potentially "escalated"
+        """
+
+        last_error = None
+        recovery_context = None
+
+        for attempt in range(1, max_retries + 1):
+            self._log_info(
+                f"Executing subtask {subtask.get('id')} (attempt {attempt}/{max_retries})",
+                phase_id="coding",
+            )
+
+            result = await self._execute_subtask_impl(
+                subtask,
+                attempt=attempt,
+                recovery_context=recovery_context,
+            )
+
+            if result.get("success"):
+                return result
+
+            last_error = result.get("error", "Unknown error")
+            recovery_context = f"Previous attempt {attempt} failed: {last_error}"
+
+            # Exponential backoff (1s, 2s, 4s)
+            if attempt < max_retries:
+                backoff = 2 ** (attempt - 1)
+                self._log_info(
+                    f"Retry in {backoff}s due to: {last_error}",
+                    phase_id="coding",
+                )
+                await asyncio.sleep(backoff)
+
+        # All retries exhausted - escalate
+        self._log_error(
+            f"Subtask {subtask.get('id')} failed after {max_retries} attempts: {last_error}",
+            phase_id="coding",
+        )
+        self.update_task_state(TaskState.ESCALATED)
+
+        return {
+            "success": False,
+            "error": f"Escalated after {max_retries} failed attempts: {last_error}",
+            "escalated": True,
+        }

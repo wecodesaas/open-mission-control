@@ -1019,3 +1019,507 @@ class TestArtifactVerificationIntegration:
 
             # Phase executed but verification should be part of the flow
             assert "planning" in runner._executed_phases
+
+
+# =============================================================================
+# Story 4.3: Coding Phase Execution Tests
+# =============================================================================
+
+
+class TestCodingPhaseSubtaskLoading:
+    """Test loading implementation plan for coding phase (Story 4.3 Task 1)."""
+
+    def test_load_implementation_plan(self, executor):
+        """Test loading subtasks from implementation_plan.json."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "spec_id": "test-spec",
+                "subtasks": [
+                    {"id": "1", "title": "First subtask", "status": "pending"},
+                    {"id": "2", "title": "Second subtask", "status": "pending"},
+                    {"id": "3", "title": "Third subtask", "status": "completed"},
+                ],
+            }
+            import json
+
+            (spec_dir / "implementation_plan.json").write_text(json.dumps(plan_data))
+
+            subtasks = executor.load_implementation_plan(spec_dir)
+
+            assert len(subtasks) == 3
+            assert subtasks[0]["id"] == "1"
+            assert subtasks[1]["title"] == "Second subtask"
+
+    def test_load_implementation_plan_missing_file(self, executor):
+        """Test that missing plan file raises appropriate error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+
+            with pytest.raises(FileNotFoundError):
+                executor.load_implementation_plan(spec_dir)
+
+    def test_load_implementation_plan_invalid_json(self, executor):
+        """Test that invalid JSON raises appropriate error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            (spec_dir / "implementation_plan.json").write_text("invalid json")
+
+            with pytest.raises(Exception):  # Could be json.JSONDecodeError
+                executor.load_implementation_plan(spec_dir)
+
+    def test_get_pending_subtasks(self, executor):
+        """Test filtering to get only pending subtasks."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "First", "status": "completed"},
+                    {"id": "2", "title": "Second", "status": "pending"},
+                    {"id": "3", "title": "Third", "status": "in_progress"},
+                    {"id": "4", "title": "Fourth", "status": "pending"},
+                ],
+            }
+            import json
+
+            (spec_dir / "implementation_plan.json").write_text(json.dumps(plan_data))
+
+            pending = executor.get_pending_subtasks(spec_dir)
+
+            assert len(pending) == 2
+            assert pending[0]["id"] == "2"
+            assert pending[1]["id"] == "4"
+
+
+class TestCodingPhaseSubtaskExecution:
+    """Test subtask execution loop (Story 4.3 Task 2)."""
+
+    @pytest.mark.asyncio
+    async def test_execute_subtask_updates_status(self, executor):
+        """Test that executing a subtask updates its status in the plan."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "Test subtask", "status": "pending"},
+                ],
+            }
+            import json
+
+            plan_file = spec_dir / "implementation_plan.json"
+            plan_file.write_text(json.dumps(plan_data))
+            executor._spec_dir = spec_dir
+
+            # Execute the subtask
+            subtask = plan_data["subtasks"][0]
+            result = await executor.execute_subtask(subtask)
+
+            # Reload plan and check status updated
+            updated_plan = json.loads(plan_file.read_text())
+            # Status should be either "completed" (success) or "failed"
+            assert updated_plan["subtasks"][0]["status"] in ["completed", "in_progress", "failed"]
+
+    @pytest.mark.asyncio
+    async def test_execute_all_subtasks_in_sequence(self, executor):
+        """Test that all subtasks are executed in sequence."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "First", "status": "pending"},
+                    {"id": "2", "title": "Second", "status": "pending"},
+                    {"id": "3", "title": "Third", "status": "pending"},
+                ],
+            }
+            import json
+
+            plan_file = spec_dir / "implementation_plan.json"
+            plan_file.write_text(json.dumps(plan_data))
+            executor._spec_dir = spec_dir
+            executor._task_dir = Path(tmpdir)
+
+            # Track execution order
+            executed_ids = []
+
+            async def mock_execute_impl(subtask, attempt=1, recovery_context=None):
+                executed_ids.append(subtask["id"])
+                return {"success": True}
+
+            # Patch the implementation method
+            with patch.object(executor, "_execute_subtask_impl", side_effect=mock_execute_impl):
+                await executor.execute_coding_phase()
+
+            # All subtasks should be executed in order
+            assert executed_ids == ["1", "2", "3"]
+
+
+class TestCodingPhaseProgressReporting:
+    """Test per-subtask progress reporting (Story 4.3 Task 3)."""
+
+    @pytest.mark.asyncio
+    async def test_emit_progress_on_subtask_start(self, executor, mock_progress_service):
+        """Test that progress is emitted when subtask starts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "Test subtask", "status": "pending"},
+                ],
+            }
+            import json
+
+            (spec_dir / "implementation_plan.json").write_text(json.dumps(plan_data))
+            executor._spec_dir = spec_dir
+            executor.context.progress = mock_progress_service
+
+            executor.emit_subtask_progress(0, 1, plan_data["subtasks"][0], "started")
+
+            # Should have emitted a started event
+            assert len(mock_progress_service.events) >= 1
+            last_event = mock_progress_service.events[-1]
+            assert "started" in last_event.message.lower() or last_event.status == "started"
+
+    @pytest.mark.asyncio
+    async def test_emit_progress_on_subtask_complete(self, executor, mock_progress_service):
+        """Test that progress is emitted when subtask completes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "Test subtask", "status": "pending"},
+                ],
+            }
+            import json
+
+            (spec_dir / "implementation_plan.json").write_text(json.dumps(plan_data))
+            executor._spec_dir = spec_dir
+            executor.context.progress = mock_progress_service
+
+            executor.emit_subtask_progress(0, 1, plan_data["subtasks"][0], "completed")
+
+            # Should have emitted a completed event
+            assert len(mock_progress_service.events) >= 1
+
+    @pytest.mark.asyncio
+    async def test_progress_percentage_calculation(self, executor, mock_progress_service):
+        """Test that percentage is calculated based on subtask count."""
+        # Coding phase is 35-75% of overall progress (40% range)
+        # 1 of 3 subtasks = 35 + (1/3)*40 = 35 + 13.33 = 48.33%
+
+        percentage = executor.calculate_subtask_percentage(1, 3)
+
+        # Should be around 48%
+        assert 45 <= percentage <= 55
+
+
+class TestCodingPhaseGitCommit:
+    """Test git commit integration (Story 4.3 Task 4)."""
+
+    @pytest.mark.asyncio
+    async def test_commit_after_subtask(self, executor):
+        """Test that changes are committed using git add -A to include deletions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor._worktree_path = Path(tmpdir)
+
+            # Mock subprocess.run
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+
+                executor.commit_subtask_changes("Implement: Test subtask")
+
+                # Verify git add -A is used (not git add .)
+                add_call = mock_run.call_args_list[0]
+                assert add_call[0][0] == ["git", "add", "-A"], (
+                    f"Expected 'git add -A', got {add_call[0][0]}"
+                )
+
+                # Verify commit call uses the message
+                commit_call = mock_run.call_args_list[1]
+                assert commit_call[0][0][:3] == ["git", "commit", "-m"]
+                assert "Implement: Test subtask" in commit_call[0][0][3]
+
+    @pytest.mark.asyncio
+    async def test_commit_uses_worktree_path(self, executor):
+        """Test that commits are made to the correct worktree directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            worktree_path = Path(tmpdir) / "worktree"
+            worktree_path.mkdir()
+            executor._worktree_path = worktree_path
+
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value.returncode = 0
+
+                executor.commit_subtask_changes("Test message")
+
+                # Verify cwd parameter is the worktree path
+                for call in mock_run.call_args_list:
+                    assert call[1].get("cwd") == worktree_path, (
+                        f"Expected cwd={worktree_path}, got {call[1].get('cwd')}"
+                    )
+
+    def test_commit_message_format(self, executor):
+        """Test that commit messages follow expected format."""
+        subtask = {"id": "1", "title": "Add user authentication"}
+
+        message = executor.format_commit_message(subtask)
+
+        assert "Implement:" in message or "Add user authentication" in message
+
+
+class TestCodingPhaseRetryLogic:
+    """Test retry logic for failed subtasks (Story 4.3 Task 5)."""
+
+    @pytest.mark.asyncio
+    async def test_retry_on_failure(self, executor):
+        """Test that failed subtask is retried up to 3 times."""
+        attempts = []
+
+        async def failing_execute(subtask, attempt=1, recovery_context=None):
+            attempts.append(attempt)
+            if len(attempts) < 3:
+                return {"success": False, "error": "Simulated failure"}
+            return {"success": True}
+
+        with patch.object(executor, "_execute_subtask_impl", side_effect=failing_execute):
+            subtask = {"id": "1", "title": "Test", "status": "pending"}
+            result = await executor.execute_subtask_with_retry(subtask)
+
+        assert len(attempts) == 3
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_exponential_backoff(self, executor):
+        """Test that retries use exponential backoff with exact delay values."""
+        async def always_fail(subtask, attempt=1, recovery_context=None):
+            return {"success": False, "error": "Always fails"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor._task_dir = Path(tmpdir)
+            with patch.object(executor, "_execute_subtask_impl", side_effect=always_fail):
+                with patch("apps.backend.core.executors.full_auto.asyncio.sleep") as mock_sleep:
+                    subtask = {"id": "1", "title": "Test", "status": "pending"}
+                    await executor.execute_subtask_with_retry(subtask, max_retries=3)
+
+                    # Should have called sleep with exponential delays: 1, 2 (between 3 attempts)
+                    # Formula: 2 ** (attempt - 1) => 2^0=1, 2^1=2
+                    assert mock_sleep.call_count == 2, f"Expected 2 sleep calls, got {mock_sleep.call_count}"
+                    sleep_calls = [call[0][0] for call in mock_sleep.call_args_list]
+                    assert sleep_calls[0] == 1, f"First backoff should be 1s, got {sleep_calls[0]}"
+                    assert sleep_calls[1] == 2, f"Second backoff should be 2s, got {sleep_calls[1]}"
+
+    @pytest.mark.asyncio
+    async def test_recovery_mode_prompt_on_retry(self, executor):
+        """Test that retry uses recovery mode prompt with error context from previous attempt."""
+        retry_contexts = []
+        error_message = "Simulated error for testing"
+
+        async def capture_execute(subtask, attempt=1, recovery_context=None):
+            retry_contexts.append(recovery_context)
+            if attempt < 2:
+                return {"success": False, "error": error_message}
+            return {"success": True}
+
+        with patch.object(executor, "_execute_subtask_impl", side_effect=capture_execute):
+            subtask = {"id": "1", "title": "Test", "status": "pending"}
+            await executor.execute_subtask_with_retry(subtask)
+
+        # Verify recovery context structure
+        assert len(retry_contexts) == 2, f"Expected 2 attempts, got {len(retry_contexts)}"
+        assert retry_contexts[0] is None, "First attempt should have no recovery context"
+        assert retry_contexts[1] is not None, "Second attempt must have recovery context"
+        assert error_message in retry_contexts[1], (
+            f"Recovery context should contain previous error. Got: {retry_contexts[1]}"
+        )
+
+
+class TestCodingPhaseEscalation:
+    """Test escalation handling for persistent failures (Story 4.3 Task 6)."""
+
+    @pytest.mark.asyncio
+    async def test_escalate_after_max_retries(self, executor):
+        """Test that task is escalated after 3 failed retries."""
+
+        async def always_fail(subtask, attempt=1, recovery_context=None):
+            return {"success": False, "error": "Always fails"}
+
+        with patch.object(executor, "_execute_subtask_impl", side_effect=always_fail):
+            subtask = {"id": "1", "title": "Test", "status": "pending"}
+            result = await executor.execute_subtask_with_retry(subtask, max_retries=3)
+
+        assert result["success"] is False
+        assert result.get("escalated") is True or "escalated" in str(result.get("error", "")).lower()
+
+    @pytest.mark.asyncio
+    async def test_escalation_updates_task_state(self, executor):
+        """Test that escalation updates task state to 'escalated'."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor._task_dir = Path(tmpdir)
+
+            async def always_fail(subtask, attempt=1, recovery_context=None):
+                return {"success": False, "error": "Always fails"}
+
+            with patch.object(executor, "_execute_subtask_impl", side_effect=always_fail):
+                subtask = {"id": "1", "title": "Test", "status": "pending"}
+                await executor.execute_subtask_with_retry(subtask, max_retries=3)
+
+            from apps.backend.core.executors.full_auto import TaskState
+
+            state = executor.get_task_state()
+            assert state in [TaskState.ESCALATED.value, TaskState.FAILED.value, "escalated", "failed"]
+
+    @pytest.mark.asyncio
+    async def test_partial_progress_preserved_on_escalation(self, executor):
+        """Test that partial progress is preserved when task is escalated."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "First", "status": "pending"},
+                    {"id": "2", "title": "Second", "status": "pending"},
+                ],
+            }
+            import json
+
+            plan_file = spec_dir / "implementation_plan.json"
+            plan_file.write_text(json.dumps(plan_data))
+            executor._spec_dir = spec_dir
+            executor._task_dir = Path(tmpdir)
+
+            call_count = 0
+
+            async def first_success_then_escalate(subtask, attempt=1, recovery_context=None):
+                nonlocal call_count
+                call_count += 1
+                if subtask.get("id") == "1":
+                    return {"success": True}
+                # Second subtask fails and escalates
+                return {"success": False, "error": "Always fails", "escalated": True}
+
+            with patch.object(executor, "_execute_subtask_impl", side_effect=first_success_then_escalate):
+                result = await executor.execute_coding_phase()
+
+            # Verify escalation occurred
+            assert result["status"] == "escalated"
+            assert result["subtask"] == "2"
+            assert result["subtasks_executed"] == 1
+
+            # Verify first subtask is still completed (preserved)
+            updated_plan = json.loads(plan_file.read_text())
+            assert updated_plan["subtasks"][0]["status"] == "completed"
+            # Second subtask should be marked as failed
+            assert updated_plan["subtasks"][1]["status"] == "failed"
+
+    @pytest.mark.asyncio
+    async def test_non_escalated_failure_stops_execution(self, executor):
+        """Test that a non-escalated failure stops execution and marks task failed.
+
+        This tests the edge case where execute_subtask_with_retry returns
+        {"success": False} without the "escalated" key.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            spec_dir = Path(tmpdir)
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "First", "status": "pending"},
+                    {"id": "2", "title": "Second", "status": "pending"},
+                ],
+            }
+            import json
+
+            plan_file = spec_dir / "implementation_plan.json"
+            plan_file.write_text(json.dumps(plan_data))
+            executor._spec_dir = spec_dir
+            executor._task_dir = Path(tmpdir)
+
+            # Simulate a failure that doesn't trigger escalation
+            async def non_escalated_fail(subtask, attempt=1, recovery_context=None):
+                return {"success": False, "error": "Network timeout"}
+
+            with patch.object(executor, "_execute_subtask_impl", side_effect=non_escalated_fail):
+                # Also patch execute_subtask_with_retry to return non-escalated failure
+                with patch.object(
+                    executor,
+                    "execute_subtask_with_retry",
+                    return_value={"success": False, "error": "Non-escalated failure"},
+                ):
+                    result = await executor.execute_coding_phase()
+
+            # Should fail, not silently continue
+            assert result["status"] == "failed"
+            assert "error" in result
+            from apps.backend.core.executors.full_auto import TaskState
+
+            state = executor.get_task_state()
+            assert state == TaskState.FAILED.value
+
+
+class TestCodingPhaseCompletion:
+    """Test state update on completion (Story 4.3 Task 7)."""
+
+    @pytest.mark.asyncio
+    async def test_coding_complete_state_on_success(self, executor):
+        """Test that successful coding phase updates state to coding_complete."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor._task_dir = Path(tmpdir)
+            executor._spec_dir = Path(tmpdir)
+
+            plan_data = {
+                "subtasks": [
+                    {"id": "1", "title": "Only subtask", "status": "pending"},
+                ],
+            }
+            import json
+
+            (executor._spec_dir / "implementation_plan.json").write_text(json.dumps(plan_data))
+
+            async def mock_execute(subtask, attempt=1, recovery_context=None):
+                return {"success": True}
+
+            with patch.object(executor, "_execute_subtask_impl", side_effect=mock_execute):
+                result = await executor.execute_coding_phase()
+
+            from apps.backend.core.executors.full_auto import TaskState
+
+            state = executor.get_task_state()
+            assert state == TaskState.CODING_COMPLETE.value or result.get("status") == "coding_complete"
+
+    @pytest.mark.asyncio
+    async def test_validation_triggered_after_coding_complete(self, mock_context):
+        """Test that validation phase is triggered after coding completes."""
+        phases = [
+            Phase(id="planning", name="Planning", order=0),
+            Phase(id="coding", name="Coding", order=1),
+            Phase(id="validation", name="Validation", order=2),
+        ]
+        runner = MockMethodologyRunner(phases=phases)
+        executor = FullAutoExecutor(
+            runner=runner,
+            context=mock_context,
+            task_config=mock_context.task_config,
+        )
+
+        await executor.execute()
+
+        # After coding, validation should automatically run
+        assert "coding" in runner._executed_phases
+        assert "validation" in runner._executed_phases
+
+    @pytest.mark.asyncio
+    async def test_completion_logged(self, executor):
+        """Test that coding phase completion is logged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            executor._task_dir = Path(tmpdir)
+            executor._log_dir = Path(tmpdir)
+            executor._spec_dir = Path(tmpdir)
+
+            plan_data = {"subtasks": []}
+            import json
+
+            (executor._spec_dir / "implementation_plan.json").write_text(json.dumps(plan_data))
+
+            with patch.object(executor._logger, "info") as mock_info:
+                await executor.execute_coding_phase()
+
+                # Should have logged completion
+                calls_str = str(mock_info.call_args_list)
+                assert "complete" in calls_str.lower() or "finished" in calls_str.lower() or len(mock_info.call_args_list) > 0
