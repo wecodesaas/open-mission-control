@@ -8,7 +8,7 @@ on:
       - 'tests/**'
       - '.github/workflows/lint.yml'
       - '.github/actions/**'
-      - 'apps/frontend/biome.json'
+      - 'apps/frontend/biome.jsonc'
       - '.pre-commit-config.yaml'
   pull_request:
     branches: [main, develop]
@@ -17,7 +17,7 @@ on:
       - 'tests/**'
       - '.github/workflows/lint.yml'
       - '.github/actions/**'
-      - 'apps/frontend/biome.json'
+      - 'apps/frontend/biome.jsonc'
       - '.pre-commit-config.yaml'
 
 concurrency:
