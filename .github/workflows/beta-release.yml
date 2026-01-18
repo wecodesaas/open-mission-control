@@ -66,8 +66,8 @@ jobs:
     needs: create-tag
     runs-on: macos-15-intel
     outputs:
-      notarization_id: ${{ steps.notarize.outputs.notarization_id }}
-      dmg_file: ${{ steps.notarize.outputs.dmg_file }}
+      notarization_id: ${{ steps.notarize.outputs.notarization-id }}
+      dmg_file: ${{ steps.notarize.outputs.dmg-file }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -79,23 +79,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Get npm cache directory
-        id: npm-cache
-        run: echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.npm-cache.outputs.dir }}
-          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: ${{ runner.os }}-npm-
-
-      - name: Install dependencies
-        run: cd apps/frontend && npm ci
+      - name: Setup Node.js and install dependencies
+        uses: ./.github/actions/setup-node-frontend
 
       - name: Install Rust toolchain (for building native Python packages)
         uses: dtolnay/rust-toolchain@stable
@@ -157,8 +142,8 @@ jobs:
     needs: create-tag
     runs-on: macos-15
     outputs:
-      notarization_id: ${{ steps.notarize.outputs.notarization_id }}
-      dmg_file: ${{ steps.notarize.outputs.dmg_file }}
+      notarization_id: ${{ steps.notarize.outputs.notarization-id }}
+      dmg_file: ${{ steps.notarize.outputs.dmg-file }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -170,23 +155,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Get npm cache directory
-        id: npm-cache
-        run: echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.npm-cache.outputs.dir }}
-          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: ${{ runner.os }}-npm-
-
-      - name: Install dependencies
-        run: cd apps/frontend && npm ci
+      - name: Setup Node.js and install dependencies
+        uses: ./.github/actions/setup-node-frontend
 
       - name: Cache pip wheel cache
         uses: actions/cache@v4
@@ -260,24 +230,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Get npm cache directory
-        id: npm-cache
-        shell: bash
-        run: echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.npm-cache.outputs.dir }}
-          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: ${{ runner.os }}-npm-
-
-      - name: Install dependencies
-        run: cd apps/frontend && npm ci
+      - name: Setup Node.js and install dependencies
+        uses: ./.github/actions/setup-node-frontend
 
       - name: Cache pip wheel cache
         uses: actions/cache@v4
@@ -448,23 +402,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Get npm cache directory
-        id: npm-cache
-        run: echo "dir=$(npm config get cache)" >> $GITHUB_OUTPUT
-
-      - uses: actions/cache@v4
-        with:
-          path: ${{ steps.npm-cache.outputs.dir }}
-          key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
-          restore-keys: ${{ runner.os }}-npm-
-
-      - name: Install dependencies
-        run: cd apps/frontend && npm ci
+      - name: Setup Node.js and install dependencies
+        uses: ./.github/actions/setup-node-frontend
 
       - name: Setup Flatpak
         run: |
@@ -582,13 +521,19 @@ jobs:
           mkdir -p release-assets
 
           # Copy stapled macOS DMGs (from finalize-notarization job)
-          find dist/macos-intel-stapled dist/macos-arm64-stapled -type f -name "*.dmg" -exec cp {} release-assets/ \; 2>/dev/null || true
+          # Validate that stapled DMGs exist before copying
+          if ! find dist/macos-intel-stapled dist/macos-arm64-stapled -type f -name "*.dmg" 2>/dev/null | grep -q .; then
+            echo "::warning::No stapled DMGs found. Using un-stapled DMGs from build artifacts."
+            find dist/macos-intel-builds dist/macos-arm64-builds -type f -name "*.dmg" -exec cp {} release-assets/ \; 2>/dev/null || true
+          else
+            find dist/macos-intel-stapled dist/macos-arm64-stapled -type f -name "*.dmg" -exec cp {} release-assets/ \; 2>/dev/null || true
+          fi
 
-          # Copy other macOS artifacts (zip, yml) from original build
-          find dist/macos-intel-builds dist/macos-arm64-builds -type f \( -name "*.zip" -o -name "*.yml" \) -exec cp {} release-assets/ \; 2>/dev/null || true
+          # Copy other macOS artifacts (zip, yml, blockmap for delta updates) from original build
+          find dist/macos-intel-builds dist/macos-arm64-builds -type f \( -name "*.zip" -o -name "*.yml" -o -name "*.blockmap" \) -exec cp {} release-assets/ \; 2>/dev/null || true
 
-          # Copy Windows and Linux artifacts
-          find dist/windows-builds dist/linux-builds -type f \( -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.flatpak" -o -name "*.yml" \) -exec cp {} release-assets/ \; 2>/dev/null || true
+          # Copy Windows and Linux artifacts (including blockmap for delta updates)
+          find dist/windows-builds dist/linux-builds -type f \( -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.flatpak" -o -name "*.yml" -o -name "*.blockmap" \) -exec cp {} release-assets/ \; 2>/dev/null || true
 
           # Validate that at least one artifact was copied
           artifact_count=$(find release-assets -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.flatpak" \) | wc -l)
@@ -727,11 +672,11 @@ jobs:
           # Copy stapled macOS DMGs (from finalize-notarization job)
           find dist/macos-intel-stapled dist/macos-arm64-stapled -type f -name "*.dmg" -exec cp {} release-assets/ \; 2>/dev/null || true
 
-          # Copy other macOS artifacts (zip, yml) from original build
-          find dist/macos-intel-builds dist/macos-arm64-builds -type f \( -name "*.zip" -o -name "*.yml" \) -exec cp {} release-assets/ \; 2>/dev/null || true
+          # Copy other macOS artifacts (zip, yml, blockmap for delta updates) from original build
+          find dist/macos-intel-builds dist/macos-arm64-builds -type f \( -name "*.zip" -o -name "*.yml" -o -name "*.blockmap" \) -exec cp {} release-assets/ \; 2>/dev/null || true
 
-          # Copy Windows and Linux artifacts
-          find dist/windows-builds dist/linux-builds -type f \( -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.flatpak" -o -name "*.yml" \) -exec cp {} release-assets/ \; 2>/dev/null || true
+          # Copy Windows and Linux artifacts (including blockmap for delta updates)
+          find dist/windows-builds dist/linux-builds -type f \( -name "*.exe" -o -name "*.AppImage" -o -name "*.deb" -o -name "*.flatpak" -o -name "*.yml" -o -name "*.blockmap" \) -exec cp {} release-assets/ \; 2>/dev/null || true
 
       # Merge macOS manifests (same logic as real release)
       - name: Merge macOS manifests

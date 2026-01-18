@@ -87,6 +87,17 @@ runs:
             echo "::error::Intel notarization failed or timed out"
             exit 1
           fi
+          # Verify notarization was accepted (not just processed)
+          INTEL_STATUS=$(xcrun notarytool info "$INTEL_NOTARIZATION_ID" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output-format json | jq -r '.status // "Unknown"')
+          if [ "$INTEL_STATUS" != "Accepted" ]; then
+            echo "::error::Intel notarization status is '$INTEL_STATUS', expected 'Accepted'"
+            exit 1
+          fi
+          echo "Intel notarization status: $INTEL_STATUS"
           echo "Stapling Intel DMG: $INTEL_PATH/$INTEL_DMG"
           if ! xcrun stapler staple "$INTEL_PATH/$INTEL_DMG"; then
             echo "::error::Failed to staple Intel DMG"
@@ -107,6 +118,17 @@ runs:
             echo "::error::ARM64 notarization failed or timed out"
             exit 1
           fi
+          # Verify notarization was accepted (not just processed)
+          ARM64_STATUS=$(xcrun notarytool info "$ARM64_NOTARIZATION_ID" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --output-format json | jq -r '.status // "Unknown"')
+          if [ "$ARM64_STATUS" != "Accepted" ]; then
+            echo "::error::ARM64 notarization status is '$ARM64_STATUS', expected 'Accepted'"
+            exit 1
+          fi
+          echo "ARM64 notarization status: $ARM64_STATUS"
           echo "Stapling ARM64 DMG: $ARM64_PATH/$ARM64_DMG"
           if ! xcrun stapler staple "$ARM64_PATH/$ARM64_DMG"; then
             echo "::error::Failed to staple ARM64 DMG"

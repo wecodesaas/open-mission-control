@@ -30,6 +30,8 @@
       },
       "security": {
         "recommended": true,
+        // noSecrets: disabled due to excessive false positives (2700+ warnings)
+        // It flags normal strings like "Settings", "Integrations", etc. as potential secrets
         "noSecrets": "off",
         "noDangerouslySetInnerHtml": "warn"
       },
@@ -51,7 +53,7 @@
         "noExplicitAny": "warn",
         "noImplicitAnyLet": "warn",
         "useIterableCallbackReturn": "off",
-        "noControlCharactersInRegex": "off",
+        "noControlCharactersInRegex": "warn",
         "noArrayIndexKey": "warn",
         "noShadowRestrictedNames": "warn",
         "noRedeclare": "warn",
@@ -59,6 +61,8 @@
       }
     }
   },
+  // Formatter disabled - using Prettier for formatting
+  // Biome linter used only for linting, keeping formatter separate
   "formatter": {
     "enabled": false
   },

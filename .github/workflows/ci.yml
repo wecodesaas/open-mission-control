@@ -16,6 +16,9 @@ on:
       - 'tests/**'
       - 'package*.json'
       - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'tsconfig*.json'
+      - 'biome.jsonc'
       - '.github/workflows/ci.yml'
       - '.github/actions/**'
   pull_request:
@@ -25,6 +28,9 @@ on:
       - 'tests/**'
       - 'package*.json'
       - 'requirements*.txt'
+      - 'pyproject.toml'
+      - 'tsconfig*.json'
+      - 'biome.jsonc'
       - '.github/workflows/ci.yml'
       - '.github/actions/**'
 

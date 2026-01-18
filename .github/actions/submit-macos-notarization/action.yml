@@ -17,10 +17,10 @@ inputs:
     default: 'apps/frontend/dist'
 
 outputs:
-  notarization_id:
+  notarization-id:
     description: 'The notarization request ID'
     value: ${{ steps.submit.outputs.notarization_id }}
-  dmg_file:
+  dmg-file:
     description: 'The DMG filename that was submitted'
     value: ${{ steps.submit.outputs.dmg_file }}
 
@@ -72,12 +72,9 @@ runs:
           exit 1
         fi
 
-        # Extract the notarization ID from JSON response using jq if available, fallback to grep/sed
-        if command -v jq &> /dev/null; then
-          NOTARIZATION_ID=$(echo "$RESULT" | jq -r '.id // empty' 2>/dev/null)
-        else
-          NOTARIZATION_ID=$(echo "$RESULT" | grep -o '"id" *: *"[^"]*"' | head -1 | sed 's/.*: *"\([^"]*\)".*/\1/')
-        fi
+        # Extract the notarization ID from JSON response
+        # jq is always available on macOS runners
+        NOTARIZATION_ID=$(echo "$RESULT" | jq -r '.id // empty' 2>/dev/null)
 
         if [ -z "$NOTARIZATION_ID" ]; then
           echo "::error::Failed to get notarization ID from response"
