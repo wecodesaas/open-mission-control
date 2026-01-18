@@ -19,6 +19,42 @@ The result: AI that doesn't just write code, but understands *your* business rul
 
 ---
 
+## Dual-System Architecture
+
+Open Mission Control combines **two complementary AI systems**:
+
+| System | Purpose | Interaction |
+|--------|---------|-------------|
+| **Auto-Claude** | Autonomous coding | Task in → code out (hands-off) |
+| **BMAD** | Guided workflows | Menus, commands, human decisions |
+
+### When to Use Each
+
+**Use Auto-Claude for:**
+- "Build feature X from this spec"
+- "Fix this bug in the payment system"
+- CI/CD integration (headless execution)
+- Batch processing multiple tasks
+
+**Use BMAD for:**
+- Sprint planning sessions
+- Architecture design reviews
+- Story refinement with stakeholders
+- Creative/innovation workshops
+- Code review workflows
+
+### How They Connect
+
+```
+BMAD (planning) → spec.md → Auto-Claude (building) → code
+                     ↓
+BMAD (review)   ← QA report ← Auto-Claude (QA)
+```
+
+Both systems share the **Graphiti knowledge graph**, so insights from planning sessions inform autonomous builds, and build discoveries feed back into planning.
+
+---
+
 ## The Vision
 
 ```
@@ -106,8 +142,13 @@ npm run dev
 ```
 open-mission-control/
 ├── apps/
-│   ├── backend/     # Python agents, specs, QA pipeline
+│   ├── backend/     # Auto-Claude engine (Python agents, QA pipeline)
 │   └── frontend/    # Electron desktop application
+├── _bmad/           # BMAD framework (guided workflows)
+│   ├── core/        # Core agents + party mode
+│   ├── bmm/         # Software dev (34 workflows, 4 phases)
+│   ├── bmb/         # Builder (custom agents/modules)
+│   └── cis/         # Creative/innovation module
 ├── guides/          # Additional documentation
 ├── tests/           # Test suite
 └── scripts/         # Build utilities
@@ -134,6 +175,26 @@ python run.py --spec 001 --merge
 ```
 
 See [guides/CLI-USAGE.md](guides/CLI-USAGE.md) for complete CLI documentation.
+
+---
+
+## BMAD Workflows
+
+BMAD provides guided, menu-driven AI workflows for planning and architecture:
+
+```bash
+# Start a BMAD session (invoke bmad-master agent in Claude Code)
+# The agent will present menus for:
+# - Sprint planning
+# - Architecture reviews
+# - Story refinement
+# - Creative brainstorming
+
+# BMAD outputs go to:
+_bmad-output/
+```
+
+BMAD includes 21+ specialized agents and 34 workflows across 4 development phases. See the [BMAD documentation](_bmad/README.md) for details.
 
 ---
 
@@ -195,10 +256,12 @@ Open Mission Control uses a three-layer security model:
 
 ## Roadmap
 
+- [x] **Phase 0**: Dual-system architecture (BMAD + Auto-Claude integration)
 - [ ] **Phase 1**: Unified knowledge graph (Graphiti + business entities)
-- [ ] **Phase 2**: Semantic search across all connected sources
-- [ ] **Phase 3**: Feedback loops (context relevance learning)
-- [ ] **Phase 4**: SaaS offering with managed connectors
+- [ ] **Phase 2**: Shared knowledge layer (BMAD ↔ Graphiti bridge)
+- [ ] **Phase 3**: UI integration (Planning Mode vs Build Mode toggle)
+- [ ] **Phase 4**: Semantic search across all connected sources
+- [ ] **Phase 5**: SaaS offering with managed connectors
 
 ---
 
@@ -220,7 +283,11 @@ Open Mission Control is free to use, modify, and distribute. Commercial use is w
 
 ## Acknowledgments
 
-Open Mission Control is a fork of [Auto-Claude](https://github.com/AndyMik90/Auto-Claude) by Andre Mikalsen. We're grateful for the foundation it provides.
+Open Mission Control builds on two excellent foundations:
+- **[Auto-Claude](https://github.com/AndyMik90/Auto-Claude)** by Andre Mikalsen — autonomous agent orchestration
+- **[BMAD-METHOD](https://github.com/bmad-code-org/BMAD-METHOD)** by BMAD Code Org — guided workflow framework
+
+We're grateful to both projects for the foundations they provide.
 
 ---
 

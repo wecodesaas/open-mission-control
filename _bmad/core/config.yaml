@@ -1,0 +1,10 @@
+# CORE Module Configuration
+# Open Mission Control - Dual System Architecture
+# BMAD Version: 6.0.0-alpha.23
+# Updated: 2026-01-18
+
+project_name: open-mission-control
+user_name: Developer
+communication_language: English
+document_output_language: English
+output_folder: "{project-root}/_bmad-output"
