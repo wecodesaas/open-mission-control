@@ -1,19 +1,19 @@
 {
-  "name": "auto-claude-ui",
-  "version": "2.7.4",
+  "name": "open-mission-control-ui",
+  "version": "3.0.0",
   "type": "module",
-  "description": "Desktop UI for Auto Claude autonomous coding framework",
-  "homepage": "https://github.com/AndyMik90/Auto-Claude",
+  "description": "Desktop UI for Open Mission Control — autonomous AI agents with business context",
+  "homepage": "https://github.com/wecodesaas/open-mission-control",
   "repository": {
     "type": "git",
-    "url": "https://github.com/AndyMik90/Auto-Claude.git"
+    "url": "https://github.com/wecodesaas/open-mission-control.git"
   },
   "main": "./out/main/index.js",
   "author": {
-    "name": "Auto Claude Team",
-    "email": "119136210+AndyMik90@users.noreply.github.com"
+    "name": "WeCodeSaaS",
+    "email": "hello@wecodesaas.com"
   },
-  "license": "AGPL-3.0",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=24.0.0",
     "npm": ">=10.0.0"

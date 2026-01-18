@@ -1,9 +1,9 @@
 {
-  "name": "auto-claude",
-  "version": "2.7.4",
-  "description": "Autonomous multi-agent coding framework powered by Claude AI",
-  "license": "AGPL-3.0",
-  "author": "Auto Claude Team",
+  "name": "open-mission-control",
+  "version": "3.0.0",
+  "description": "Autonomous AI agents that understand your business — multi-agent coding with business context",
+  "license": "Apache-2.0",
+  "author": "WeCodeSaaS",
   "workspaces": [
     "apps/*",
     "libs/*"
@@ -31,7 +31,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/AndyMik90/Auto-Claude.git"
+    "url": "https://github.com/wecodesaas/open-mission-control.git"
   },
   "keywords": [
     "ai",
@@ -39,7 +39,9 @@
     "autonomous",
     "coding",
     "agents",
-    "electron"
+    "mission-control",
+    "business-context",
+    "knowledge-graph"
   ],
   "devDependencies": {
     "jsdom": "^27.4.0"
