@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -645,7 +645,7 @@ def _write_individual_stories(
 
 def create_epics(
     output_dir: Path,
-    progress_callback: callable | None = None,
+    progress_callback: Callable | None = None,
 ) -> EpicsDocument:
     """Create an Epics and Stories Document.
 
@@ -810,7 +810,7 @@ def load_epics(output_dir: Path) -> EpicsDocument | None:
 
 def prepare_stories(
     output_dir: Path,
-    progress_callback: callable | None = None,
+    progress_callback: Callable | None = None,
 ) -> list[Story]:
     """Prepare stories for development by loading and validating them.
 

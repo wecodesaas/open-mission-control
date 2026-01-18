@@ -9,14 +9,24 @@ import { useState, useEffect, useCallback } from 'react';
 import type { MethodologyInfo } from '../../../shared/types/methodology';
 
 /**
- * Static methodology data for initial implementation.
- * Will be replaced with IPC call to methodology registry in Epic 6.
+ * Static methodology data for bundled methodologies.
+ * Both native and bmad are verified, bundled methodologies.
+ * Future: May be replaced with IPC call to methodology registry for dynamic plugin discovery.
  */
 const STATIC_METHODOLOGIES: MethodologyInfo[] = [
   {
     name: 'native',
     version: '1.0.0',
     description: 'Built-in methodology with spec creation and implementation phases',
+    author: 'Auto Claude',
+    complexity_levels: ['quick', 'standard', 'complex'],
+    execution_modes: ['full_auto', 'semi_auto'],
+    is_verified: true,
+  },
+  {
+    name: 'bmad',
+    version: '1.0.0',
+    description: 'Comprehensive planning with PRD, architecture, epics, and stories',
     author: 'Auto Claude',
     complexity_levels: ['quick', 'standard', 'complex'],
     execution_modes: ['full_auto', 'semi_auto'],

@@ -5,7 +5,10 @@
 import type { ThinkingLevel, PhaseModelConfig, PhaseThinkingConfig } from './settings';
 import type { ExecutionPhase as ExecutionPhaseType, CompletablePhase } from '../constants/phase-protocol';
 
-export type TaskStatus = 'backlog' | 'in_progress' | 'ai_review' | 'human_review' | 'pr_created' | 'done' | 'error';
+export type TaskStatus = 'backlog' | 'in_progress' | 'ai_review' | 'human_review' | 'pr_created' | 'done';
+
+// Maps task status columns to ordered task IDs for kanban board reordering
+export type TaskOrderState = Record<TaskStatus, string[]>;
 
 // Reason why a task is in human_review status
 // - 'completed': All subtasks done and QA passed, ready for final approval/merge
@@ -311,7 +314,6 @@ export interface Task {
   qaReport?: QAReport;
   logs: string[];
   metadata?: TaskMetadata;  // Rich metadata from ideation or manual entry
-  errorInfo?: TaskErrorInfo;  // Structured error information for i18n (set when status is 'error')
   executionProgress?: ExecutionProgress;  // Real-time execution progress
   /** Escalation information if task needs user attention (Story 4.5) */
   escalationInfo?: EscalationInfo;

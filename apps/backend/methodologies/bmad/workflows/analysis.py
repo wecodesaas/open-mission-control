@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import yaml
 
@@ -397,7 +397,7 @@ def _get_project_name(project_dir: Path) -> str:
 def analyze_project(
     project_dir: Path,
     output_dir: Path | None = None,
-    progress_callback: callable | None = None,
+    progress_callback: Callable | None = None,
 ) -> ProjectAnalysis:
     """Analyze a project and produce analysis.json artifact.
 

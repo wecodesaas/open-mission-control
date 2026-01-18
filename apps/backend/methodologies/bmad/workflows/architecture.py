@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -686,7 +686,7 @@ def _generate_architecture_from_inputs(
 
 def create_architecture(
     output_dir: Path,
-    progress_callback: callable | None = None,
+    progress_callback: Callable | None = None,
 ) -> ArchitectureDocument:
     """Create an Architecture Document.
 
